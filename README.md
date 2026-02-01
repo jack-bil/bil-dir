@@ -15,6 +15,17 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+### First Run
+When you first run the app, it will automatically create these files in the project directory:
+- `.codex_sessions.json` - Session storage
+- `.codex_tasks.json` - Task storage
+- `.codex_history.json` - Command history
+- `.codex_log.jsonl` - Event logs
+- `.client_config.json` - UI preferences
+- `.codex_sessions/` - Context files (if using Codex)
+
+These files are git-ignored and will be created with default values on first startup.
+
 ## Prereqs
 - Python 3.10+ (3.11/3.12 ok)
 - Any CLIs you plan to use installed and on PATH (see below)
