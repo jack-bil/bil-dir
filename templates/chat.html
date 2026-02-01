@@ -54,6 +54,11 @@
         cursor: pointer;
         font-size: 16px;
       }
+      #menuToggle {
+        font-size: 20px;
+        width: 38px;
+        height: 38px;
+      }
       main {
         display: grid;
         grid-template-columns: 380px 1fr;
@@ -286,6 +291,136 @@
         font-size: 18px;
         line-height: 1;
       }
+      .empty-state {
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        text-align: center;
+        padding: 40px 20px;
+      }
+      .empty-state.active {
+        display: flex;
+      }
+      .empty-content h2 {
+        color: var(--ink);
+        margin-bottom: 12px;
+        font-size: 24px;
+      }
+      .empty-content p {
+        color: #6b7280;
+        margin-bottom: 24px;
+        font-size: 16px;
+      }
+      .primary-btn {
+        background: var(--accent);
+        color: #0b0f16;
+        border: none;
+        padding: 12px 24px;
+        border-radius: 10px;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      .primary-btn:hover {
+        opacity: 0.9;
+        transform: translateY(-1px);
+      }
+      .secondary-btn {
+        background: transparent;
+        color: var(--ink);
+        border: 1px solid var(--border);
+        padding: 12px 24px;
+        border-radius: 10px;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      .secondary-btn:hover {
+        border-color: var(--accent);
+      }
+      .task-detail-view {
+        padding: 20px;
+        overflow-y: auto;
+      }
+      .task-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 24px;
+        padding-bottom: 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      .task-header h2 {
+        margin: 0;
+        color: var(--ink);
+      }
+      .task-header-actions {
+        display: flex;
+        gap: 8px;
+      }
+      .task-edit-form {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        max-width: 600px;
+      }
+      .task-edit-form .row {
+        display: flex;
+        gap: 8px;
+      }
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .checkbox-row input[type="checkbox"] {
+        width: auto;
+        margin: 0;
+      }
+      .checkbox-group {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 8px;
+        background: rgba(11, 15, 22, 0.5);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+      .schedule-fields {
+        display: none;
+        flex-direction: column;
+        gap: 12px;
+        padding: 12px;
+        background: rgba(11, 15, 22, 0.3);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+      .schedule-fields.active {
+        display: flex;
+      }
+      .task-output-section {
+        margin-top: 32px;
+        padding-top: 24px;
+        border-top: 1px solid var(--border);
+      }
+      .task-output-section h3 {
+        color: var(--ink);
+        margin-bottom: 12px;
+      }
+      .task-output-content {
+        background: #0b0f16;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 16px;
+        color: var(--ink);
+        font-size: 13px;
+        white-space: pre-wrap;
+        overflow-x: auto;
+      }
       .sessions-list {
         flex: 1;
         min-height: 0;
@@ -298,6 +433,11 @@
         flex-direction: column;
         gap: 8px;
       }
+      .tasks-list li {
+        padding: 0;
+        margin: 0;
+        list-style: none;
+      }
       .task-card {
         border: 1px solid var(--border);
         border-radius: 10px;
@@ -306,6 +446,18 @@
         display: flex;
         flex-direction: column;
         gap: 8px;
+        text-decoration: none;
+        color: inherit;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+      .task-card:hover {
+        background: rgba(11, 15, 22, 0.9);
+        border-color: var(--accent);
+      }
+      .task-card.active {
+        border-color: var(--accent);
+        background: rgba(0, 194, 255, 0.1);
       }
       .task-meta {
         display: flex;
@@ -713,6 +865,10 @@
         box-shadow: 0 0 6px rgba(34, 197, 94, 0.7);
         animation: pulse 1.6s ease-in-out infinite;
       }
+      .status-dot.error {
+        background: #ef4444;
+        box-shadow: 0 0 6px rgba(239, 68, 68, 0.7);
+      }
       @keyframes pulse {
         0% { box-shadow: 0 0 0 rgba(34, 197, 94, 0.0); }
         50% { box-shadow: 0 0 10px rgba(34, 197, 94, 0.85); }
@@ -786,15 +942,32 @@
         .mobile-only { display: inline-flex; }
         .sessions {
           position: fixed;
-          top: 0;
+          top: 60px;
           left: 0;
-          height: 100vh;
+          height: calc(100vh - 60px);
           width: min(86vw, 380px);
           transform: translateX(-105%);
           transition: transform 0.25s ease;
           z-index: 25;
+          padding: 16px;
+          overflow-y: auto;
         }
-        .sessions { max-height: 100vh; }
+        .sessions .section-header {
+          position: sticky;
+          top: -16px;
+          background: var(--panel);
+          z-index: 10;
+          padding: 8px 0;
+          margin: 0 0 10px 0;
+        }
+        .sessions .section-body {
+          overflow-y: visible;
+          max-height: none;
+          min-height: auto;
+        }
+        .sessions .section-toggle {
+          font-size: 16px;
+        }
         body.menu-open .sessions {
           transform: translateX(0);
         }
@@ -858,9 +1031,11 @@
   </head>
   <body data-selected="{{ selected or '' }}" data-default-workdir="{{ default_workdir or '' }}" data-session-workdir="{{ session_workdir or '' }}">
     <header>
-      <h1>Bil-dir</h1>
       <div class="row">
-        <button class="resume-btn mobile-only" id="menuToggle" type="button">Sessions</button>
+        <button class="icon-btn mobile-only" id="menuToggle" type="button" aria-label="Menu" title="Menu">☰</button>
+        <h1>Bil-dir</h1>
+      </div>
+      <div class="row">
         <div class="muted">
           <a class="icon-btn" href="/config" aria-label="Config" title="Config">⚙</a>
         </div>
@@ -981,8 +1156,8 @@
                 <option value="gemini">gemini</option>
                 <option value="claude">claude</option>
               </select>
-              <label for="taskScheduleType">Schedule</label>
-              <select id="taskScheduleType">
+              <label for="taskScheduleTypeOld">Schedule</label>
+              <select id="taskScheduleTypeOld">
                 <option value="manual">Manual</option>
                 <option value="interval">Interval (minutes)</option>
                 <option value="daily">Daily</option>
@@ -1018,6 +1193,139 @@
         </div>
       </section>
       <section class="panel chat">
+        {% if view_mode == 'task' and selected_task %}
+        <div class="task-detail-view" id="taskDetailView">
+          <div class="task-header">
+            <h2>{{ selected_task.name }}</h2>
+            <div class="task-header-actions">
+              <button class="icon-btn" id="runTaskBtn" title="Run Now">▶</button>
+              <button class="icon-btn" id="deleteTaskBtn" title="Delete Task">🗑</button>
+            </div>
+          </div>
+          <form id="taskEditForm" class="task-edit-form">
+            <div>
+              <label for="taskName">Task Name</label>
+              <input type="text" id="taskName" name="taskName" value="{{ selected_task.name }}" required />
+            </div>
+            <div>
+              <label for="taskCommand">Prompt</label>
+              <textarea id="taskCommand" name="taskCommand" required>{{ selected_task.prompt if selected_task.prompt else selected_task.command if selected_task.command else '' }}</textarea>
+            </div>
+            <div>
+              <label for="taskProvider">Provider</label>
+              <select id="taskProvider" name="taskProvider">
+                <option value="codex" {% if selected_task.provider == 'codex' %}selected{% endif %}>Codex</option>
+                <option value="copilot" {% if selected_task.provider == 'copilot' %}selected{% endif %}>Copilot</option>
+                <option value="gemini" {% if selected_task.provider == 'gemini' %}selected{% endif %}>Gemini</option>
+                <option value="claude" {% if selected_task.provider == 'claude' %}selected{% endif %}>Claude</option>
+              </select>
+            </div>
+            <div>
+              <label for="taskWorkdir">Working Directory</label>
+              <div class="row">
+                <input type="text" id="taskWorkdir" name="taskWorkdir" value="{{ selected_task.workdir or '' }}" />
+                <button type="button" class="cwd-btn" id="taskPickWorkdir">Choose</button>
+              </div>
+            </div>
+            <div>
+              <label for="taskScheduleType">Schedule Type</label>
+              <select id="taskScheduleType" name="taskScheduleType">
+                <option value="manual" {% if not selected_task.schedule or selected_task.schedule.type == 'manual' %}selected{% endif %}>Manual</option>
+                <option value="once" {% if selected_task.schedule and selected_task.schedule.type == 'once' %}selected{% endif %}>One Time</option>
+                <option value="interval" {% if selected_task.schedule and selected_task.schedule.type == 'interval' %}selected{% endif %}>Repeat Every</option>
+                <option value="daily" {% if selected_task.schedule and selected_task.schedule.type == 'daily' %}selected{% endif %}>Daily</option>
+                <option value="weekly" {% if selected_task.schedule and selected_task.schedule.type == 'weekly' %}selected{% endif %}>Weekly</option>
+                <option value="monthly" {% if selected_task.schedule and selected_task.schedule.type == 'monthly' %}selected{% endif %}>Monthly</option>
+              </select>
+            </div>
+            <div id="scheduleOnceFields" class="schedule-fields {% if selected_task.schedule and selected_task.schedule.type == 'once' %}active{% endif %}">
+              <label for="taskScheduleDate">Date & Time</label>
+              <div class="row">
+                <input type="date" id="taskScheduleDate" name="taskScheduleDate" value="{{ selected_task.schedule.date if selected_task.schedule and selected_task.schedule.date else '' }}" />
+                <input type="time" id="taskScheduleOnceTime" name="taskScheduleOnceTime" value="{{ selected_task.schedule.time if selected_task.schedule and selected_task.schedule.time else '00:00' }}" />
+              </div>
+            </div>
+            <div id="scheduleIntervalFields" class="schedule-fields {% if selected_task.schedule and selected_task.schedule.type == 'interval' %}active{% endif %}">
+              <label for="taskScheduleMinutes">Repeat every</label>
+              <div class="row">
+                <input type="number" id="taskScheduleMinutes" name="taskScheduleMinutes" min="1" value="{{ selected_task.schedule.minutes if selected_task.schedule and selected_task.schedule.type == 'interval' else 60 }}" style="width: 100px;" />
+                <span class="muted">minutes</span>
+              </div>
+              <label for="taskIntervalStartDate">Start</label>
+              <div class="row">
+                <input type="date" id="taskIntervalStartDate" name="taskIntervalStartDate" value="{{ selected_task.schedule.start_date if selected_task.schedule and selected_task.schedule.start_date else '' }}" />
+                <input type="time" id="taskIntervalStartTime" name="taskIntervalStartTime" value="{{ selected_task.schedule.start_time if selected_task.schedule and selected_task.schedule.start_time else '00:00' }}" />
+              </div>
+            </div>
+            <div id="scheduleDailyFields" class="schedule-fields {% if selected_task.schedule and selected_task.schedule.type == 'daily' %}active{% endif %}">
+              <label for="taskScheduleDailyTime">Start time</label>
+              <input type="time" id="taskScheduleDailyTime" name="taskScheduleDailyTime" value="{{ selected_task.schedule.time if selected_task.schedule and selected_task.schedule.time else '00:00' }}" />
+              <label for="taskDailyStartDate">Start date</label>
+              <input type="date" id="taskDailyStartDate" name="taskDailyStartDate" value="{{ selected_task.schedule.start_date if selected_task.schedule and selected_task.schedule.start_date else '' }}" />
+              <label for="taskDailyRecur">Recur every</label>
+              <div class="row">
+                <input type="number" id="taskDailyRecur" name="taskDailyRecur" min="1" value="{{ selected_task.schedule.recur_days if selected_task.schedule and selected_task.schedule.recur_days else 1 }}" style="width: 80px;" />
+                <span class="muted">day(s)</span>
+              </div>
+            </div>
+            <div id="scheduleWeeklyFields" class="schedule-fields {% if selected_task.schedule and selected_task.schedule.type == 'weekly' %}active{% endif %}">
+              <label for="taskScheduleWeeklyTime">Start time</label>
+              <input type="time" id="taskScheduleWeeklyTime" name="taskScheduleWeeklyTime" value="{{ selected_task.schedule.time if selected_task.schedule and selected_task.schedule.time else '00:00' }}" />
+              <label for="taskWeeklyStartDate">Start date</label>
+              <input type="date" id="taskWeeklyStartDate" name="taskWeeklyStartDate" value="{{ selected_task.schedule.start_date if selected_task.schedule and selected_task.schedule.start_date else '' }}" />
+              <label for="taskWeeklyRecur">Recur every</label>
+              <div class="row">
+                <input type="number" id="taskWeeklyRecur" name="taskWeeklyRecur" min="1" value="{{ selected_task.schedule.recur_weeks if selected_task.schedule and selected_task.schedule.recur_weeks else 1 }}" style="width: 80px;" />
+                <span class="muted">week(s)</span>
+              </div>
+              <label style="margin-top: 12px;">On these days</label>
+              <div class="checkbox-group">
+                <label class="checkbox-row"><input type="checkbox" name="weekday" value="monday" {% if selected_task.schedule and selected_task.schedule.days and 'monday' in selected_task.schedule.days %}checked{% endif %} /> Monday</label>
+                <label class="checkbox-row"><input type="checkbox" name="weekday" value="tuesday" {% if selected_task.schedule and selected_task.schedule.days and 'tuesday' in selected_task.schedule.days %}checked{% endif %} /> Tuesday</label>
+                <label class="checkbox-row"><input type="checkbox" name="weekday" value="wednesday" {% if selected_task.schedule and selected_task.schedule.days and 'wednesday' in selected_task.schedule.days %}checked{% endif %} /> Wednesday</label>
+                <label class="checkbox-row"><input type="checkbox" name="weekday" value="thursday" {% if selected_task.schedule and selected_task.schedule.days and 'thursday' in selected_task.schedule.days %}checked{% endif %} /> Thursday</label>
+                <label class="checkbox-row"><input type="checkbox" name="weekday" value="friday" {% if selected_task.schedule and selected_task.schedule.days and 'friday' in selected_task.schedule.days %}checked{% endif %} /> Friday</label>
+                <label class="checkbox-row"><input type="checkbox" name="weekday" value="saturday" {% if selected_task.schedule and selected_task.schedule.days and 'saturday' in selected_task.schedule.days %}checked{% endif %} /> Saturday</label>
+                <label class="checkbox-row"><input type="checkbox" name="weekday" value="sunday" {% if selected_task.schedule and selected_task.schedule.days and 'sunday' in selected_task.schedule.days %}checked{% endif %} /> Sunday</label>
+              </div>
+            </div>
+            <div id="scheduleMonthlyFields" class="schedule-fields {% if selected_task.schedule and selected_task.schedule.type == 'monthly' %}active{% endif %}">
+              <label for="taskScheduleMonthlyTime">Start time</label>
+              <input type="time" id="taskScheduleMonthlyTime" name="taskScheduleMonthlyTime" value="{{ selected_task.schedule.time if selected_task.schedule and selected_task.schedule.time else '00:00' }}" />
+              <label for="taskMonthlyStartDate">Start date</label>
+              <input type="date" id="taskMonthlyStartDate" name="taskMonthlyStartDate" value="{{ selected_task.schedule.start_date if selected_task.schedule and selected_task.schedule.start_date else '' }}" />
+              <label for="taskScheduleDay">Day of month</label>
+              <input type="number" id="taskScheduleDay" name="taskScheduleDay" min="1" max="31" value="{{ selected_task.schedule.day if selected_task.schedule and selected_task.schedule.day else 1 }}" />
+              <label for="taskMonthlyRecur">Recur every</label>
+              <div class="row">
+                <input type="number" id="taskMonthlyRecur" name="taskMonthlyRecur" min="1" value="{{ selected_task.schedule.recur_months if selected_task.schedule and selected_task.schedule.recur_months else 1 }}" style="width: 80px;" />
+                <span class="muted">month(s)</span>
+              </div>
+            </div>
+            <div class="checkbox-row">
+              <input type="checkbox" id="taskEnabled" name="taskEnabled" {% if selected_task.enabled %}checked{% endif %} />
+              <label for="taskEnabled">Enabled</label>
+            </div>
+            <div class="row">
+              <button type="submit" class="primary-btn">Save Changes</button>
+              <button type="button" class="secondary-btn" id="cancelTaskEdit">Cancel</button>
+            </div>
+          </form>
+          {% if selected_task.last_output %}
+          <div class="task-output-section">
+            <h3>Last Output</h3>
+            <pre class="task-output-content">{{ selected_task.last_output }}</pre>
+          </div>
+          {% endif %}
+        </div>
+        {% else %}
+        <div class="empty-state" id="emptyState">
+          <div class="empty-content">
+            <h2>No Session Selected</h2>
+            <p>Create a new session to start chatting with AI assistants</p>
+            <button class="primary-btn" id="emptyStateAddBtn">+ Create Session</button>
+          </div>
+        </div>
         <div class="messages" id="messages"></div>
         <form id="chatForm" class="composer">
           <input id="session_name" name="session_name" type="hidden" value="{{ selected or '' }}" />
@@ -1042,13 +1350,14 @@
         </div>
         <div class="status" id="statusLine"></div>
       </form>
+        {% endif %}
     </section>
   </main>
     <script>
       const form = document.getElementById("chatForm");
       const messages = document.getElementById("messages");
       const statusLine = document.getElementById("statusLine");
-      const sendButton = form.querySelector("button[type='submit']");
+      const sendButton = form ? form.querySelector("button[type='submit']") : null;
       const promptInput = document.getElementById("prompt");
       const providerSelect = document.getElementById("providerSelect");
       const menuToggle = document.getElementById("menuToggle");
@@ -1073,7 +1382,7 @@
       const taskNameInput = document.getElementById("taskName");
       const taskPromptInput = document.getElementById("taskPrompt");
       const taskProviderSelect = document.getElementById("taskProvider");
-      const taskScheduleType = document.getElementById("taskScheduleType");
+      const taskScheduleType = document.getElementById("taskScheduleTypeOld");
       const taskIntervalRow = document.getElementById("taskIntervalRow");
       const taskIntervalInput = document.getElementById("taskInterval");
       const taskTimeRow = document.getElementById("taskTimeRow");
@@ -1091,8 +1400,30 @@
       const selectedSession = document.body.dataset.selected || "";
       const providerModels = {{ provider_models|tojson }};
 
+      // Show empty state if no session selected
+      const emptyState = document.getElementById("emptyState");
+      const chatForm = document.getElementById("chatForm");
+      
+      function updateEmptyState() {
+        const sessionNameEl = document.getElementById("session_name");
+        const hasSession = sessionNameEl ? sessionNameEl.value.trim() !== "" : false;
+        if (emptyState) {
+          emptyState.classList.toggle("active", !hasSession);
+        }
+        if (chatForm) {
+          chatForm.classList.toggle("hidden", !hasSession);
+        }
+        if (messages) {
+          messages.classList.toggle("hidden", !hasSession);
+        }
+      }
+      
+      updateEmptyState();
+
       function scrollToBottom() {
-        messages.scrollTop = messages.scrollHeight;
+        if (messages) {
+          messages.scrollTop = messages.scrollHeight;
+        }
       }
 
       // Configure marked once at startup
@@ -1448,10 +1779,11 @@
         streamResponse({ session_name: name, provider, attach: true });
       }
 
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const sessionName = document.getElementById("session_name").value.trim();
-        const prompt = document.getElementById("prompt").value.trim();
+      if (form) {
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const sessionName = document.getElementById("session_name").value.trim();
+          const prompt = document.getElementById("prompt").value.trim();
         const forceNew = document.getElementById("force_new").checked;
         if (!sessionName || !prompt) return;
 
@@ -1474,14 +1806,17 @@
           document.getElementById("force_new").checked = false;
           statusLine.textContent = "";
         }
-      });
+        });
 
-      promptInput.addEventListener("keydown", (e) => {
-        if (e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          form.requestSubmit();
+        if (promptInput) {
+          promptInput.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              form.requestSubmit();
+            }
+          });
         }
-      });
+      }
 
       function wireSessionCards() {
         document.querySelectorAll(".session-card").forEach((card) => {
@@ -1806,6 +2141,12 @@
         addSessionModal.classList.remove("open");
       }
 
+      // Wire up empty state button
+      const emptyStateAddBtn = document.getElementById("emptyStateAddBtn");
+      if (emptyStateAddBtn) {
+        emptyStateAddBtn.addEventListener("click", openAddSessionModal);
+      }
+
       if (addSessionBtn) {
         addSessionBtn.addEventListener("click", openAddSessionModal);
       }
@@ -1936,6 +2277,7 @@
           return;
         }
         taskCache = {};
+        const selectedTaskId = "{{ selected_task.id if selected_task else '' }}";
         tasksList.innerHTML = tasks
           .map((task) => {
             taskCache[task.id] = task;
@@ -1943,24 +2285,24 @@
             const schedule = task.schedule_summary || "Manual";
             const lastRun = task.last_run ? `Last run: ${task.last_run}` : "Never run";
             const nextRun = task.next_run ? `Next: ${task.next_run}` : "";
-            const enabledLabel = task.enabled ? "Disable" : "Enable";
-            const output = task.last_output ? task.last_output.trim() : "";
+            const isActive = selectedTaskId === task.id ? "active" : "";
             return `
-              <li class="task-card" data-task-id="${task.id}">
-                <div class="task-meta">
-                  <div>
-                    <strong>${task.name}</strong>
-                    <div class="task-detail">${schedule} · ${task.provider}</div>
-                  </div>
-                  <div class="task-actions">
-                    <div class="task-menu" data-task-menu="${task.id}">
-                      <button class="menu-btn" type="button" aria-label="Task menu">⋮</button>
+              <li>
+                <a href="/task/${task.id}" class="task-card ${isActive}" data-task-id="${task.id}">
+                  <div class="task-meta">
+                    <div>
+                      <strong>${task.name}</strong>
+                      <div class="task-detail">${schedule} · ${task.provider}</div>
+                    </div>
+                    <div class="task-actions">
+                      <span class="status-dot ${status === 'running' ? 'running' : status === 'error' ? 'error' : ''}" 
+                            aria-label="${status === 'running' ? 'Running' : status === 'error' ? 'Error' : 'Idle'}" 
+                            title="${status === 'running' ? 'Running' : status === 'error' ? 'Error' : 'Idle'}"></span>
                     </div>
                   </div>
-                </div>
-                <div class="task-detail">${lastRun} ${nextRun}</div>
-                ${status === "error" && task.last_error ? `<div class="task-detail">Error: ${task.last_error}</div>` : ""}
-                ${output ? `<details class="task-output"><summary>Output</summary>${output}</details>` : ""}
+                  <div class="task-detail">${lastRun} ${nextRun ? nextRun : ''}</div>
+                  ${status === "error" && task.last_error ? `<div class="task-detail">Error: ${task.last_error}</div>` : ""}
+                </a>
               </li>
             `;
           })
@@ -2001,7 +2343,198 @@
         };
       }
 
-      wireTaskStream();
+      // Only start task stream if we're not viewing a specific task
+      const viewMode = "{{ view_mode if view_mode else '' }}";
+      if (viewMode !== "task") {
+        wireTaskStream();
+      } else {
+        // In task view, fetch tasks once to populate the list
+        fetch("/tasks")
+          .then((resp) => resp.json())
+          .then((data) => renderTasks(data.tasks || []))
+          .catch(() => {});
+      }
+
+      // Task detail view handlers
+      if (document.getElementById("taskEditForm")) {
+        const taskEditForm = document.getElementById("taskEditForm");
+        const runTaskBtn = document.getElementById("runTaskBtn");
+        const deleteTaskBtn = document.getElementById("deleteTaskBtn");
+        const cancelTaskEdit = document.getElementById("cancelTaskEdit");
+        const taskEditScheduleType = document.getElementById("taskScheduleType");
+        const scheduleOnceFields = document.getElementById("scheduleOnceFields");
+        const scheduleIntervalFields = document.getElementById("scheduleIntervalFields");
+        const scheduleDailyFields = document.getElementById("scheduleDailyFields");
+        const scheduleWeeklyFields = document.getElementById("scheduleWeeklyFields");
+        const scheduleMonthlyFields = document.getElementById("scheduleMonthlyFields");
+        const taskPickWorkdir = document.getElementById("taskPickWorkdir");
+
+        function updateScheduleFieldsVisibility() {
+          if (!taskEditScheduleType) return;
+          const type = taskEditScheduleType.value;
+          console.log('Schedule type:', type);
+          // Hide all schedule fields
+          [scheduleOnceFields, scheduleIntervalFields, scheduleDailyFields, scheduleWeeklyFields, scheduleMonthlyFields].forEach(el => {
+            if (el) {
+              el.classList.remove("active");
+              console.log('Hiding', el.id);
+            }
+          });
+          // Show relevant field
+          if (type === "once" && scheduleOnceFields) {
+            scheduleOnceFields.classList.add("active");
+            console.log('Showing once fields');
+          }
+          if (type === "interval" && scheduleIntervalFields) {
+            scheduleIntervalFields.classList.add("active");
+            console.log('Showing interval fields');
+          }
+          if (type === "daily" && scheduleDailyFields) {
+            scheduleDailyFields.classList.add("active");
+            console.log('Showing daily fields');
+          }
+          if (type === "weekly" && scheduleWeeklyFields) {
+            scheduleWeeklyFields.classList.add("active");
+            console.log('Showing weekly fields');
+          }
+          if (type === "monthly" && scheduleMonthlyFields) {
+            scheduleMonthlyFields.classList.add("active");
+            console.log('Showing monthly fields');
+          }
+        }
+
+        if (taskEditScheduleType) {
+          taskEditScheduleType.addEventListener("change", updateScheduleFieldsVisibility);
+          // Trigger on page load after DOM is fully ready
+          requestAnimationFrame(() => {
+            setTimeout(updateScheduleFieldsVisibility, 200);
+          });
+        }
+
+      if (taskPickWorkdir) {
+        taskPickWorkdir.addEventListener("click", async () => {
+          try {
+            const resp = await fetch("/pick-workdir", { method: "POST" });
+            if (resp.ok) {
+              const data = await resp.json();
+              if (data && data.path) {
+                document.getElementById("taskWorkdir").value = data.path;
+              }
+            }
+          } catch (err) {
+            console.error("Failed to pick workdir:", err);
+          }
+        });
+      }
+
+      if (taskEditForm) {
+        taskEditForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const taskId = "{{ selected_task.id if selected_task else '' }}";
+          if (!taskId) return;
+
+          const scheduleType = document.getElementById("taskScheduleType").value;
+          const schedule = { type: scheduleType };
+          
+          if (scheduleType === "once") {
+            schedule.date = document.getElementById("taskScheduleDate").value || "";
+            schedule.time = document.getElementById("taskScheduleOnceTime").value || "00:00";
+          } else if (scheduleType === "interval") {
+            schedule.minutes = parseInt(document.getElementById("taskScheduleMinutes").value || "60", 10);
+            schedule.start_date = document.getElementById("taskIntervalStartDate").value || "";
+            schedule.start_time = document.getElementById("taskIntervalStartTime").value || "00:00";
+          } else if (scheduleType === "daily") {
+            schedule.time = document.getElementById("taskScheduleDailyTime").value || "00:00";
+            schedule.start_date = document.getElementById("taskDailyStartDate").value || "";
+            schedule.recur_days = parseInt(document.getElementById("taskDailyRecur").value || "1", 10);
+          } else if (scheduleType === "weekly") {
+            schedule.time = document.getElementById("taskScheduleWeeklyTime").value || "00:00";
+            schedule.start_date = document.getElementById("taskWeeklyStartDate").value || "";
+            schedule.recur_weeks = parseInt(document.getElementById("taskWeeklyRecur").value || "1", 10);
+            const days = [];
+            document.querySelectorAll('input[name="weekday"]:checked').forEach(el => {
+              days.push(el.value);
+            });
+            schedule.days = days;
+          } else if (scheduleType === "monthly") {
+            schedule.time = document.getElementById("taskScheduleMonthlyTime").value || "00:00";
+            schedule.start_date = document.getElementById("taskMonthlyStartDate").value || "";
+            schedule.day = parseInt(document.getElementById("taskScheduleDay").value || "1", 10);
+            schedule.recur_months = parseInt(document.getElementById("taskMonthlyRecur").value || "1", 10);
+          }
+
+          const body = {
+            name: document.getElementById("taskName").value.trim(),
+            prompt: document.getElementById("taskCommand").value.trim(),
+            provider: document.getElementById("taskProvider").value,
+            workdir: document.getElementById("taskWorkdir").value.trim(),
+            schedule,
+            enabled: document.getElementById("taskEnabled").checked,
+          };
+
+          try {
+            const resp = await fetch(`/tasks/${taskId}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(body),
+            });
+            if (resp.ok) {
+              window.location.reload();
+            } else {
+              const data = await resp.json().catch(() => ({}));
+              alert(data.error || "Failed to update task");
+            }
+          } catch (err) {
+            console.error("Failed to update task:", err);
+            alert("Failed to update task");
+          }
+        });
+      }
+
+      if (runTaskBtn) {
+        runTaskBtn.addEventListener("click", async () => {
+          const taskId = "{{ selected_task.id if selected_task else '' }}";
+          if (!taskId) return;
+          try {
+            const resp = await fetch(`/tasks/${taskId}/run`, { method: "POST" });
+            if (!resp.ok) {
+              const data = await resp.json().catch(() => ({}));
+              alert(data.error || "Failed to run task");
+            }
+          } catch (err) {
+            console.error("Failed to run task:", err);
+            alert("Failed to run task");
+          }
+        });
+      }
+
+      if (deleteTaskBtn) {
+        deleteTaskBtn.addEventListener("click", async () => {
+          const taskId = "{{ selected_task.id if selected_task else '' }}";
+          const taskName = "{{ selected_task.name if selected_task else '' }}";
+          if (!taskId) return;
+          if (!confirm(`Delete task "${taskName}"?`)) return;
+          try {
+            const resp = await fetch(`/tasks/${taskId}`, { method: "DELETE" });
+            if (resp.ok) {
+              window.location.href = "/chat";
+            } else {
+              const data = await resp.json().catch(() => ({}));
+              alert(data.error || "Failed to delete task");
+            }
+          } catch (err) {
+            console.error("Failed to delete task:", err);
+            alert("Failed to delete task");
+          }
+        });
+      }
+
+      if (cancelTaskEdit) {
+        cancelTaskEdit.addEventListener("click", () => {
+          window.location.href = "/chat";
+        });
+      }
+      } // End task detail view block
 
       function wireTaskMenus() {
         const getFlyout = () => {

@@ -1386,6 +1386,38 @@ def chat_named(name):
     )
 
 
+@APP.get("/task/<task_id>")
+def task_view(task_id):
+    with _SESSION_LOCK:
+        sessions = _load_sessions()
+    with _TASK_LOCK:
+        tasks = _load_tasks()
+    
+    task = tasks.get(task_id)
+    if not task:
+        return "Task not found", 404
+    
+    config = _load_client_config()
+    default_workdir = (config.get("default_workdir") or "").strip()
+    session_status = _sessions_with_status(sessions)
+    session_list = _build_session_list(sessions)
+    provider_models = _get_provider_model_info()
+    
+    return render_template(
+        "chat.html",
+        sessions=sessions,
+        session_list=session_list,
+        session_status=session_status,
+        default_provider=DEFAULT_PROVIDER,
+        history_messages=[],
+        history_tools=[],
+        default_workdir=default_workdir,
+        provider_models=provider_models,
+        selected_task=task,
+        view_mode="task",
+    )
+
+
 @APP.post("/launch")
 def launch():
     session_name = (request.form.get("session_name") or "").strip()
@@ -2353,6 +2385,11 @@ def _run_task_async(task_id):
             with _TASK_LOCK:
                 tasks = _load_tasks()
                 task = tasks.get(task_id)
+                if task:
+                    task["last_status"] = "running"
+                    _save_tasks(tasks)
+            _broadcast_tasks_snapshot()
+            
             if not task:
                 return
             result = _run_task_exec(task)
