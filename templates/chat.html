@@ -2343,17 +2343,10 @@
         };
       }
 
-      // Only start task stream if we're not viewing a specific task
+      // Start task stream for live status updates
+      // Always run to show task status, even when viewing a specific task
       const viewMode = "{{ view_mode if view_mode else '' }}";
-      if (viewMode !== "task") {
-        wireTaskStream();
-      } else {
-        // In task view, fetch tasks once to populate the list
-        fetch("/tasks")
-          .then((resp) => resp.json())
-          .then((data) => renderTasks(data.tasks || []))
-          .catch(() => {});
-      }
+      wireTaskStream();
 
       // Task detail view handlers
       if (document.getElementById("taskEditForm")) {
