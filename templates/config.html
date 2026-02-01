@@ -1,0 +1,570 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Bil-dir Config</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg: #0f1116;
+        --panel: #161a22;
+        --ink: #e6edf3;
+        --muted: #9aa7b2;
+        --accent: #6ee7b7;
+        --accent-2: #93c5fd;
+        --border: #232a36;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        color: var(--ink);
+        background: radial-gradient(1200px 600px at 15% -10%, #23304a, transparent),
+                    radial-gradient(900px 400px at 95% 10%, #1d3b2f, transparent),
+                    var(--bg);
+        min-height: 100vh;
+      }
+      header {
+        padding: 16px 20px;
+        margin: 0;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      main {
+        max-width: none;
+        margin: 0;
+        padding: 0 16px 16px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 18px;
+        box-shadow: 0 12px 30px rgba(0,0,0,0.2);
+      }
+      .tabs {
+        display: flex;
+        gap: 8px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 14px;
+        flex-wrap: wrap;
+      }
+      .tab-btn {
+        padding: 8px 14px;
+        border-radius: 10px 10px 0 0;
+        border: 1px solid var(--border);
+        border-bottom: none;
+        background: #0b0f16;
+        color: var(--muted);
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .tab-btn.active {
+        color: var(--ink);
+        background: #121826;
+        border-color: #2a3650;
+      }
+      .tab-panel { display: none; }
+      .tab-panel.active { display: block; }
+      label {
+        display: block;
+        margin: 14px 0 6px;
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+      }
+      input[type="text"], input[type="password"], textarea {
+        width: 100%;
+        padding: 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #0b0f16;
+        color: var(--ink);
+        font-size: 14px;
+      }
+      textarea { min-height: 140px; resize: vertical; }
+      .row {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      .icon-btn {
+        width: 32px;
+        height: 32px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #0b0f16;
+        color: var(--accent);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        font-size: 16px;
+        text-decoration: none;
+      }
+      button {
+        padding: 10px 16px;
+        border: none;
+        border-radius: 10px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: #0b0f16;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .muted { color: var(--muted); font-size: 13px; }
+      .subtle { color: #7b8794; font-size: 12px; }
+      .notice {
+        margin: 0 0 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid #1f3a2a;
+        background: rgba(34, 197, 94, 0.12);
+        color: #86efac;
+      }
+      .error {
+        margin: 0 0 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid #3a1f1f;
+        background: rgba(239, 68, 68, 0.12);
+        color: #fecaca;
+      }
+      .chip-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 10px;
+        margin: 10px 0 14px;
+      }
+      .chip {
+        border: 1px solid var(--border);
+        background: #0b0f16;
+        color: var(--ink);
+        border-radius: 12px;
+        padding: 10px 12px;
+        text-align: left;
+        cursor: pointer;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-height: 64px;
+      }
+      .chip:hover {
+        border-color: #2a3650;
+        background: #0d121b;
+      }
+      .chip strong { font-size: 13px; }
+      .chip span { color: var(--muted); font-size: 12px; }
+      .status-row { display: flex; gap: 10px; flex-wrap: wrap; margin: 6px 0 12px; }
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: #0b0f16;
+        font-size: 12px;
+      }
+      .status-pill > span {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .model-badge {
+        font-size: 10px;
+        color: #94a3b8;
+        background: #1e293b;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-weight: 500;
+      }
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #ef4444;
+        box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
+      }
+      .status-pill.ok .status-dot {
+        background: #22c55e;
+        box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
+      }
+      @media (max-width: 700px) {
+        header { padding: 12px 14px; }
+        main { padding: 0 12px 16px; }
+        .panel { padding: 14px; border-radius: 12px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Bil-dir Config</h1>
+      <a class="icon-btn" href="/chat" aria-label="Back to chat" title="Back to chat">↩</a>
+    </header>
+    <main>
+      <section class="panel">
+        {% if saved %}
+        <div class="notice">Saved.</div>
+        {% endif %}
+        {% if error %}
+        <div class="error">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="/config" id="configForm">
+          <div class="tabs" role="tablist">
+            <button type="button" class="tab-btn active" data-tab="general">General</button>
+            <button type="button" class="tab-btn" data-tab="permissions">Permissions</button>
+            <button type="button" class="tab-btn" data-tab="mcp">MCP</button>
+          </div>
+
+          <div class="tab-panel active" id="tab-general">
+            <div class="row" style="margin-top:4px; align-items:center;">
+              <div class="subtle">CLI availability</div>
+              <button type="button" class="icon-btn" id="checkProvidersBtn" title="Check CLI availability" aria-label="Check CLI availability">⟳</button>
+            </div>
+            <div class="status-row" id="providerStatus">
+              {% for name in providers %}
+                {% set ok = provider_status and provider_status.get(name) %}
+                {% set model = provider_models and provider_models.get(name) %}
+                <div class="status-pill {% if ok %}ok{% endif %}" data-provider="{{ name }}" title="{% if model %}Model: {{ model }}{% endif %}">
+                  <span class="status-dot"></span>
+                  <span>{{ name }}{% if model %}<span class="model-badge">{{ model }}</span>{% endif %}</span>
+                </div>
+              {% endfor %}
+            </div>
+
+            <h3>Gemini</h3>
+            <label for="gemini_path">Gemini CLI path (optional)</label>
+            <input id="gemini_path" name="gemini_path" type="text" value="{{ config.get('gemini_path','') }}" />
+            <div class="muted">If blank, the app uses gemini/gemini.cmd from PATH.</div>
+
+            <h3 style="margin-top:20px">Claude</h3>
+            <label for="claude_path">Claude CLI path (optional)</label>
+            <input id="claude_path" name="claude_path" type="text" value="{{ config.get('claude_path','') }}" />
+            <div class="muted">If blank, the app uses claude/claude.cmd from PATH.</div>
+
+            <h3 style="margin-top:20px">GitHub Copilot</h3>
+            <label for="copilot_path">Copilot CLI path (optional)</label>
+            <input id="copilot_path" name="copilot_path" type="text" value="{{ config.get('copilot_path','') }}" />
+            
+            <label for="copilot_model" style="margin-top:12px">Copilot model (optional)</label>
+            <input id="copilot_model" name="copilot_model" type="text" value="{{ config.get('copilot_model','') }}" placeholder="e.g. claude-sonnet-4.5, gpt-5" />
+            <div class="muted">Specify which model Copilot should use. If blank, uses Copilot's default.</div>
+
+            <h3 style="margin-top:20px">Default Working Directory</h3>
+            <label for="default_workdir">Default working directory (optional)</label>
+            <div class="row" style="gap: 8px; align-items: center;">
+              <input id="default_workdir" name="default_workdir" type="text" value="{{ config.get('default_workdir','') }}" style="flex: 1;" />
+              <button type="button" class="icon-btn" id="browseWorkdirBtn" title="Browse for folder" aria-label="Browse for folder">📁</button>
+            </div>
+            <div class="muted">Used when no per-request working directory is set.</div>
+          </div>
+
+          <div class="tab-panel" id="tab-permissions">
+            <h3>Permissions</h3>
+            <label for="full_permissions">Full permissions</label>
+            <div class="row">
+              <input id="full_permissions" name="full_permissions" type="checkbox" {% if config.get('full_permissions', True) %}checked{% endif %} />
+              <div class="muted">Allow auto-approval for supported CLIs (Codex uses its own defaults).</div>
+            </div>
+            <label for="full_permissions_codex">Codex full permissions</label>
+            <div class="row">
+              <input id="full_permissions_codex" name="full_permissions_codex" type="checkbox" {% if config.get('full_permissions_codex', True) %}checked{% endif %} />
+              <div class="muted">Reserved for Codex; sandbox/approval is not forced here.</div>
+            </div>
+            <label for="sandbox_mode_codex">Codex sandbox mode</label>
+            <div class="row">
+              <select id="sandbox_mode_codex" name="sandbox_mode_codex">
+                <option value="" {% if not config.get('sandbox_mode_codex') %}selected{% endif %}>Default (CLI)</option>
+                <option value="workspace-write" {% if config.get('sandbox_mode_codex') == 'workspace-write' %}selected{% endif %}>workspace-write</option>
+                <option value="danger-full-access" {% if config.get('sandbox_mode_codex') == 'danger-full-access' %}selected{% endif %}>danger-full-access</option>
+              </select>
+              <div class="muted">Overrides Codex sandbox for runs started here.</div>
+            </div>
+            <label for="copilot_permissions">Copilot permissions</label>
+            <div class="row">
+              <select id="copilot_permissions" name="copilot_permissions">
+                <option value="" {% if not config.get('copilot_permissions') %}selected{% endif %}>Default (prompt for each)</option>
+                <option value="allow-all-tools" {% if config.get('copilot_permissions') == 'allow-all-tools' %}selected{% endif %}>Allow All Tools</option>
+                <option value="allow-all-paths" {% if config.get('copilot_permissions') == 'allow-all-paths' %}selected{% endif %}>Allow All Paths</option>
+                <option value="allow-all-urls" {% if config.get('copilot_permissions') == 'allow-all-urls' %}selected{% endif %}>Allow All URLs</option>
+                <option value="allow-all" {% if config.get('copilot_permissions') == 'allow-all' %}selected{% endif %}>YOLO (--allow-all)</option>
+              </select>
+              <div class="muted">Controls what Copilot can do without prompting.</div>
+            </div>
+            <label for="full_permissions_gemini">Gemini full permissions</label>
+            <div class="row">
+              <input id="full_permissions_gemini" name="full_permissions_gemini" type="checkbox" {% if config.get('full_permissions_gemini', True) %}checked{% endif %} />
+              <div class="muted">Reserved for Gemini (no CLI flag yet).</div>
+            </div>
+            <label for="sandbox_mode_gemini">Gemini sandbox mode</label>
+            <div class="row">
+              <select id="sandbox_mode_gemini" name="sandbox_mode_gemini">
+                <option value="" {% if not config.get('sandbox_mode_gemini') %}selected{% endif %}>Default (CLI)</option>
+                <option value="workspace-write" {% if config.get('sandbox_mode_gemini') == 'workspace-write' %}selected{% endif %}>workspace-write</option>
+                <option value="danger-full-access" {% if config.get('sandbox_mode_gemini') == 'danger-full-access' %}selected{% endif %}>danger-full-access</option>
+              </select>
+              <div class="muted">Reserved for Gemini (no CLI sandbox flag).</div>
+            </div>
+            <label for="full_permissions_claude">Claude full permissions</label>
+            <div class="row">
+              <input id="full_permissions_claude" name="full_permissions_claude" type="checkbox" {% if config.get('full_permissions_claude', True) %}checked{% endif %} />
+              <div class="muted">Reserved for Claude (no CLI flag yet).</div>
+            </div>
+            <label for="sandbox_mode_claude">Claude sandbox mode</label>
+            <div class="row">
+              <select id="sandbox_mode_claude" name="sandbox_mode_claude">
+                <option value="" {% if not config.get('sandbox_mode_claude') %}selected{% endif %}>Default (CLI)</option>
+                <option value="workspace-write" {% if config.get('sandbox_mode_claude') == 'workspace-write' %}selected{% endif %}>workspace-write</option>
+                <option value="danger-full-access" {% if config.get('sandbox_mode_claude') == 'danger-full-access' %}selected{% endif %}>danger-full-access</option>
+              </select>
+              <div class="muted">Reserved for Claude (no CLI sandbox flag).</div>
+            </div>
+          </div>
+
+          <div class="tab-panel" id="tab-mcp">
+            <h3>MCP (Codex + Copilot)</h3>
+            <label for="mcp_json">MCP JSON</label>
+            <div class="subtle">Quick add common MCPs (adds to JSON below).</div>
+            <div class="chip-grid" id="mcpQuickAdd"></div>
+            <textarea id="mcp_json" name="mcp_json" rows="8" placeholder='{"servers":{"my-mcp":{"command":"node","args":["server.js"],"env":{"KEY":"VALUE"}}}}'>{{ config.get('mcp_json','') }}</textarea>
+            <div class="muted">Saved to .mcp.json and applied to Codex (config.toml) + Copilot (--additional-mcp-config). Gemini does not use MCP.</div>
+          </div>
+
+          <div class="row" style="margin-top:16px">
+            <button type="submit">Save</button>
+            <div class="muted">Providers: {{ providers|join(", ") }}</div>
+          </div>
+        </form>
+      </section>
+    </main>
+    <script>
+      const mcpQuickAdd = [
+        {
+          key: "playwright",
+          label: "Playwright",
+          desc: "Browser automation and testing",
+          spec: { command: "npx", args: ["-y", "@playwright/mcp@latest"] },
+        },
+        {
+          key: "github",
+          label: "GitHub",
+          desc: "Repo issues, PRs, files",
+          spec: {
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-github"],
+            env: { GITHUB_PERSONAL_ACCESS_TOKEN: "REPLACE_ME" },
+          },
+        },
+        {
+          key: "filesystem",
+          label: "Filesystem",
+          desc: "Local file access",
+          spec: {
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-filesystem", "C:\\\\path\\\\to\\\\share"],
+          },
+        },
+        {
+          key: "postgres",
+          label: "Postgres",
+          desc: "PostgreSQL database access",
+          spec: {
+            command: "npx",
+            args: ["-y", "mcp-postgres-server"],
+            env: {
+              PGHOST: "localhost",
+              PGPORT: "5432",
+              PGUSER: "postgres",
+              PGPASSWORD: "REPLACE_ME",
+              PGDATABASE: "postgres",
+            },
+          },
+        },
+        {
+          key: "http",
+          label: "HTTP/SSE",
+          desc: "Remote MCP over HTTP",
+          spec: { url: "http://localhost:3000/mcp", transport: "sse" },
+        },
+        {
+          key: "docker",
+          label: "Docker",
+          desc: "Docker MCP gateway",
+          spec: { command: "docker", args: ["mcp", "gateway", "run"] },
+        },
+        {
+          key: "kubernetes",
+          label: "Kubernetes",
+          desc: "Cluster access",
+          spec: { command: "npx", args: ["-y", "kubernetes-mcp-server@latest"] },
+        },
+        {
+          key: "plex",
+          label: "Plex",
+          desc: "Media server MCP",
+          spec: { url: "http://localhost:8001/mcp/plex" },
+        },
+        {
+          key: "sqlserver",
+          label: "SQL Server",
+          desc: "Microsoft SQL Server",
+          spec: {
+            command: "mcp-sqlserver",
+            env: {
+              SQLSERVER_SERVER: "localhost",
+              SQLSERVER_PORT: "1433",
+              SQLSERVER_USER: "sa",
+              SQLSERVER_PASSWORD: "REPLACE_ME",
+              SQLSERVER_DATABASE: "master",
+            },
+          },
+        },
+      ];
+
+      const mcpJsonInput = document.getElementById("mcp_json");
+      const mcpQuickAddGrid = document.getElementById("mcpQuickAdd");
+
+      function parseMcpJson(raw) {
+        const text = (raw || "").trim();
+        if (!text) {
+          return { servers: {} };
+        }
+        const data = JSON.parse(text);
+        if (data && typeof data === "object") {
+          if (!data.servers && data.mcpServers) {
+            data.servers = data.mcpServers;
+            delete data.mcpServers;
+          }
+          if (!data.servers) {
+            data.servers = {};
+          }
+          return data;
+        }
+        return { servers: {} };
+      }
+
+      function serializeMcpJson(data) {
+        return JSON.stringify(data, null, 2);
+      }
+
+      function uniqueKey(base, servers) {
+        if (!servers[base]) return base;
+        let idx = 2;
+        while (servers[`${base}-${idx}`]) {
+          idx += 1;
+        }
+        return `${base}-${idx}`;
+      }
+
+      function addMcpServer(template) {
+        let data;
+        try {
+          data = parseMcpJson(mcpJsonInput.value);
+        } catch (err) {
+          alert("MCP JSON is invalid. Fix it before using quick add.");
+          return;
+        }
+        const servers = data.servers || {};
+        const key = uniqueKey(template.key, servers);
+        servers[key] = template.spec;
+        data.servers = servers;
+        mcpJsonInput.value = serializeMcpJson(data);
+      }
+
+      function renderQuickAdd() {
+        mcpQuickAdd.forEach((item) => {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "chip";
+          button.innerHTML = `<strong>${item.label}</strong><span>${item.desc}</span>`;
+          button.addEventListener("click", () => addMcpServer(item));
+          mcpQuickAddGrid.appendChild(button);
+        });
+      }
+
+      if (mcpQuickAddGrid) {
+        renderQuickAdd();
+      }
+
+      async function refreshProviderStatus() {
+        try {
+          const resp = await fetch("/diag/providers");
+          if (!resp.ok) return;
+          const data = await resp.json();
+          document.querySelectorAll(".status-pill[data-provider]").forEach((pill) => {
+            const name = pill.getAttribute("data-provider");
+            if (data && data[name]) {
+              pill.classList.add("ok");
+            } else {
+              pill.classList.remove("ok");
+            }
+          });
+        } catch (err) {
+          // ignore
+        }
+      }
+
+      const checkProvidersBtn = document.getElementById("checkProvidersBtn");
+      if (checkProvidersBtn) {
+        checkProvidersBtn.addEventListener("click", refreshProviderStatus);
+      }
+
+      const browseWorkdirBtn = document.getElementById("browseWorkdirBtn");
+      if (browseWorkdirBtn) {
+        browseWorkdirBtn.addEventListener("click", async () => {
+          try {
+            const resp = await fetch("/pick-workdir", { method: "POST" });
+            const data = await resp.json();
+            if (data.path) {
+              document.getElementById("default_workdir").value = data.path;
+            }
+          } catch (err) {
+            console.error("Failed to pick directory:", err);
+          }
+        });
+      }
+
+      function activateTab(target) {
+        document.querySelectorAll(".tab-btn").forEach((btn) => {
+          const isActive = btn.getAttribute("data-tab") === target;
+          btn.classList.toggle("active", isActive);
+        });
+        document.querySelectorAll(".tab-panel").forEach((panel) => {
+          panel.classList.toggle("active", panel.id === `tab-${target}`);
+        });
+      }
+
+      document.querySelectorAll(".tab-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const tab = btn.getAttribute("data-tab");
+          activateTab(tab);
+        });
+      });
+
+      const configForm = document.getElementById("configForm");
+      if (configForm) {
+        configForm.addEventListener("submit", () => {
+          try {
+            sessionStorage.setItem("refreshProvidersOnLoad", "1");
+          } catch (err) {
+            // ignore
+          }
+        });
+      }
+
+      try {
+        if (sessionStorage.getItem("refreshProvidersOnLoad")) {
+          sessionStorage.removeItem("refreshProvidersOnLoad");
+          refreshProviderStatus();
+        } else {
+          refreshProviderStatus();
+        }
+      } catch (err) {
+        refreshProviderStatus();
+      }
+    </script>
+  </body>
+</html>

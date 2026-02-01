@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Codex Sessions</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg: #0f1116;
+        --panel: #161a22;
+        --ink: #e6edf3;
+        --muted: #9aa7b2;
+        --accent: #6ee7b7;
+        --accent-2: #93c5fd;
+        --danger: #f87171;
+        --border: #232a36;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "IBM Plex Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        color: var(--ink);
+        background: radial-gradient(1200px 600px at 15% -10%, #23304a, transparent),
+                    radial-gradient(900px 400px at 95% 10%, #1d3b2f, transparent),
+                    var(--bg);
+        min-height: 100vh;
+      }
+      header {
+        padding: 32px 24px 8px;
+        max-width: 980px;
+        margin: 0 auto;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 32px;
+        letter-spacing: 0.4px;
+      }
+      p { margin: 0; color: var(--muted); }
+      main {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 20px;
+        padding: 24px;
+        max-width: 980px;
+        margin: 0 auto;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 18px;
+        box-shadow: 0 12px 30px rgba(0,0,0,0.2);
+      }
+      label {
+        display: block;
+        margin: 12px 0 6px;
+        color: var(--muted);
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+      }
+      input[type="text"], textarea {
+        width: 100%;
+        padding: 12px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: #0b0f16;
+        color: var(--ink);
+        font-size: 14px;
+      }
+      textarea { min-height: 120px; resize: vertical; }
+      .row {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+        margin-top: 12px;
+      }
+      .checkbox {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+      button {
+        padding: 10px 16px;
+        border: none;
+        border-radius: 10px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        color: #0b0f16;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .sessions ul {
+        list-style: none;
+        padding: 0;
+        margin: 8px 0 0;
+      }
+      .sessions li {
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        margin-bottom: 8px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .sessions small { color: var(--muted); }
+      .tag {
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: #0b0f16;
+        border: 1px solid var(--border);
+        color: var(--accent);
+        font-size: 12px;
+      }
+      @media (max-width: 860px) {
+        main { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 700px) {
+        header { padding: 24px 16px 8px; }
+        main { padding: 16px; gap: 14px; }
+        h1 { font-size: 26px; }
+        .panel { padding: 14px; border-radius: 12px; }
+        textarea { min-height: 100px; }
+        .sessions li { flex-direction: column; align-items: flex-start; gap: 8px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Codex Session Launcher</h1>
+      <p>Create a new session or resume an existing one by name.</p>
+      <p style="margin-top:8px"><a href="/chat">Open chat view</a></p>
+    </header>
+    <main>
+      <section class="panel">
+        <form method="post" action="/launch">
+          <label for="session_name">Session name</label>
+          <input id="session_name" name="session_name" type="text" placeholder="e.g. module-a" required />
+
+          <label for="prompt">Prompt</label>
+          <textarea id="prompt" name="prompt" placeholder="What should Codex do?" required></textarea>
+
+          <div class="row">
+            <label class="checkbox">
+              <input type="checkbox" name="force_new" />
+              Create new (overwrite name)
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" name="resume_last" />
+              Resume last if name missing
+            </label>
+            <button type="submit">Launch</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel sessions">
+        <h3>Known sessions</h3>
+        {% if sessions %}
+        <ul>
+          {% for name, sid in sessions.items() %}
+          <li>
+            <div>
+              <a href="/chat/{{ name }}"><strong>{{ name }}</strong></a><br />
+              <small>{{ sid }}</small>
+            </div>
+            <div class="row">
+              <a class="tag" href="/chat/{{ name }}">chat</a>
+              <button class="tag resume-btn" type="button" data-session="{{ name }}">resume</button>
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p>No sessions yet. Create one on the left.</p>
+        {% endif %}
+      </section>
+    </main>
+    <script>
+      document.querySelectorAll(".resume-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const name = btn.getAttribute("data-session") || "";
+          if (name) {
+            window.location.href = `/chat/${encodeURIComponent(name)}`;
+          }
+        });
+      });
+    </script>
+  </body>
+</html>
