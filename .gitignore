@@ -16,3 +16,30 @@ __pycache__/
 
 # Enhancements tracking
 enhancements.md
+
+# IDE/AI assistant cache
+.claude/
+.cursor/
+
+# Session data
+.codex_sessions/
+
+# Test artifacts
+.playwright-mcp/
+test_*.py
+test_*.png
+*_test.py
+*.png
+
+# Log files (SENSITIVE - may contain IPs)
+*.log
+context_debug.log
+server.log
+error.log
+
+# Development/debug documents
+PER_DIRECTORY_HISTORY.md
+PHASE2_VERIFICATION.md
+enhancements.md
+debug_*.png
+*_debug.*
