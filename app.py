@@ -2817,14 +2817,58 @@ def create_session():
                     config = _get_provider_config()
                     
                     if provider == "codex":
-                        _run_codex_exec("/init", cwd, extra_args=None, timeout_sec=60, resume_session_id=session_id, json_events=False)
+                        # Run /init without resuming (creates new session)
+                        result = _run_codex_exec("/init", cwd, extra_args=None, timeout_sec=60, resume_session_id=None, json_events=True)
+                        # Extract session_id from result
+                        if result and isinstance(result, list):
+                            new_session_id = _extract_session_id(result)
+                            if new_session_id:
+                                # Update session record with the actual session_id
+                                with _SESSION_LOCK:
+                                    data = _load_sessions()
+                                    if name in data and isinstance(data[name], dict):
+                                        data[name]["session_id"] = new_session_id
+                                        data[name]["session_ids"][provider] = new_session_id
+                                        _save_sessions(data)
+                                logger.info(f"Auto-init completed for session '{name}', session_id: {new_session_id}")
+                            else:
+                                logger.warning(f"Auto-init completed but no session_id extracted for '{name}'")
                     elif provider == "copilot":
-                        _run_copilot_exec("/init", cwd, config, extra_args=None, timeout_sec=60, resume_session_id=session_id)
+                        result = _run_copilot_exec("/init", cwd, config, extra_args=None, timeout_sec=60, resume_session_id=None)
+                        if result and isinstance(result, dict):
+                            new_session_id = result.get("session_id")
+                            if new_session_id:
+                                with _SESSION_LOCK:
+                                    data = _load_sessions()
+                                    if name in data and isinstance(data[name], dict):
+                                        data[name]["session_id"] = new_session_id
+                                        data[name]["session_ids"][provider] = new_session_id
+                                        _save_sessions(data)
+                                logger.info(f"Auto-init completed for session '{name}', session_id: {new_session_id}")
                     elif provider == "gemini":
-                        _run_gemini_exec("/init", [], config, timeout_sec=60, cwd=cwd, resume_session_id=session_id)
+                        result = _run_gemini_exec("/init", [], config, timeout_sec=60, cwd=cwd, resume_session_id=None)
+                        if result and isinstance(result, dict):
+                            new_session_id = result.get("session_id")
+                            if new_session_id:
+                                with _SESSION_LOCK:
+                                    data = _load_sessions()
+                                    if name in data and isinstance(data[name], dict):
+                                        data[name]["session_id"] = new_session_id
+                                        data[name]["session_ids"][provider] = new_session_id
+                                        _save_sessions(data)
+                                logger.info(f"Auto-init completed for session '{name}', session_id: {new_session_id}")
                     elif provider == "claude":
-                        _run_claude_exec("/init", config, timeout_sec=60, cwd=cwd, resume_session_id=session_id)
-                    logger.info(f"Auto-init completed for session '{name}'")
+                        result = _run_claude_exec("/init", config, timeout_sec=60, cwd=cwd, resume_session_id=None)
+                        if result and isinstance(result, dict):
+                            new_session_id = result.get("session_id")
+                            if new_session_id:
+                                with _SESSION_LOCK:
+                                    data = _load_sessions()
+                                    if name in data and isinstance(data[name], dict):
+                                        data[name]["session_id"] = new_session_id
+                                        data[name]["session_ids"][provider] = new_session_id
+                                        _save_sessions(data)
+                                logger.info(f"Auto-init completed for session '{name}', session_id: {new_session_id}")
                 except Exception as e:
                     logger.warning(f"Auto-init failed for session '{name}': {e}")
             
