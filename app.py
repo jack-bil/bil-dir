@@ -2817,7 +2817,7 @@ def create_session():
                     config = _get_provider_config()
                     
                     if provider == "codex":
-                        # Run /init without resuming (creates new session)
+                        # Codex supports /init as a prompt command
                         result = _run_codex_exec("/init", cwd, extra_args=None, timeout_sec=120, resume_session_id=None, json_events=True)
                         if result and isinstance(result, list):
                             new_session_id = _extract_session_id(result)
@@ -2830,13 +2830,25 @@ def create_session():
                                         _save_sessions(data)
                                 logger.info(f"Auto-init completed for session '{name}', session_id: {new_session_id}")
                     elif provider == "copilot":
-                        # Copilot supports /init slash command
-                        proc, args = _run_copilot_exec("/init", cwd, config, extra_args=None, timeout_sec=120, resume_session_id=None)
+                        # Copilot: Request to create COPILOT.md with file permissions
+                        init_prompt = f"/init and create a COPILOT.md file in {cwd}"
+                        proc, args = _run_copilot_exec(init_prompt, cwd, config, extra_args=["--allow-all-paths"], timeout_sec=120, resume_session_id=None)
                         logger.info(f"Auto-init completed for Copilot session '{name}'")
                     elif provider == "claude":
-                        # Claude supports slash commands
-                        proc, args = _run_claude_exec("/init", config, timeout_sec=120, cwd=cwd, resume_session_id=None)
-                        logger.info(f"Auto-init completed for Claude session '{name}'")
+                        # Claude: Request to create CLAUDE.md with --allow-all-paths permission
+                        init_prompt = f"/init and create a CLAUDE.md file in {cwd}"
+                        claude_path = _resolve_claude_path(config)
+                        if claude_path:
+                            args = [claude_path, "--allow-all-paths", "-p", init_prompt]
+                            proc = subprocess.run(
+                                args,
+                                cwd=cwd,
+                                capture_output=True,
+                                text=True,
+                                encoding="utf-8",
+                                timeout=120,
+                            )
+                            logger.info(f"Auto-init completed for Claude session '{name}'")
                     elif provider == "gemini":
                         # Gemini might not support /init - skip for now
                         logger.info(f"Skipping auto-init for Gemini (not supported)")
