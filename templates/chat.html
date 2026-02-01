@@ -1027,6 +1027,30 @@
         scrollbar-width: thin;
         scrollbar-color: rgba(71, 85, 105, 0.4) rgba(15, 17, 22, 0.4);
       }
+      
+      /* Tooltip styling */
+      .tooltip-icon {
+        display: inline-block;
+        width: 16px;
+        height: 16px;
+        text-align: center;
+        line-height: 16px;
+        border-radius: 50%;
+        background: rgba(100, 116, 139, 0.3);
+        color: #94a3b8;
+        font-size: 12px;
+        cursor: help;
+        margin-left: 4px;
+      }
+      .tooltip-icon:hover {
+        background: rgba(100, 116, 139, 0.5);
+      }
+      
+      /* Checkbox styling */
+      .form-group input[type="checkbox"] {
+        margin-right: 8px;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body data-selected="{{ selected or '' }}" data-default-workdir="{{ default_workdir or '' }}" data-session-workdir="{{ session_workdir or '' }}">
@@ -1077,6 +1101,14 @@
             <button type="button" class="cwd-btn" id="newSessionPickWorkdir">Choose</button>
             <button type="button" class="cwd-btn" id="newSessionClearWorkdir">Clear</button>
           </div>
+          <input type="text" id="newSessionWorkdirManual" placeholder="Or type path manually..." style="margin-top: 8px; display: none;" />
+        </div>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="newSessionRunInit" disabled />
+            Run /init on startup
+            <span class="tooltip-icon" title="Automatically generates a context file (COPILOT.md, CLAUDE.md, etc.) by analyzing your codebase. This can take a few minutes depending on the size of the folder.">ⓘ</span>
+          </label>
         </div>
         <div class="form-actions">
           <button type="button" class="btn-secondary" id="addSessionCancelBtn">Cancel</button>
@@ -2169,10 +2201,42 @@
               if (data && data.path) {
                 newSessionWorkdirValue = data.path;
                 newSessionWorkdir.textContent = data.path;
+                // Enable the init checkbox when workdir is set
+                const initCheckbox = document.getElementById("newSessionRunInit");
+                if (initCheckbox) initCheckbox.disabled = false;
+              } else if (data && data.error) {
+                // Show manual input if picker fails (e.g., tkinter not available)
+                alert(data.error + "\n\nYou can type the path manually instead.");
+                const manualInput = document.getElementById("newSessionWorkdirManual");
+                if (manualInput) manualInput.style.display = "block";
               }
             }
           } catch (err) {
             console.error("Failed to pick workdir:", err);
+          }
+        });
+      }
+      
+      // Handle manual workdir input
+      const newSessionWorkdirManual = document.getElementById("newSessionWorkdirManual");
+      if (newSessionWorkdirManual) {
+        newSessionWorkdirManual.addEventListener("input", (e) => {
+          const path = e.target.value.trim();
+          if (path) {
+            newSessionWorkdirValue = path;
+            newSessionWorkdir.textContent = path;
+            // Enable the init checkbox when workdir is set
+            const initCheckbox = document.getElementById("newSessionRunInit");
+            if (initCheckbox) initCheckbox.disabled = false;
+          } else {
+            newSessionWorkdirValue = "";
+            newSessionWorkdir.textContent = "Not set";
+            // Disable and uncheck the init checkbox when workdir is cleared
+            const initCheckbox = document.getElementById("newSessionRunInit");
+            if (initCheckbox) {
+              initCheckbox.disabled = true;
+              initCheckbox.checked = false;
+            }
           }
         });
       }
@@ -2181,6 +2245,15 @@
         newSessionClearWorkdir.addEventListener("click", () => {
           newSessionWorkdirValue = "";
           newSessionWorkdir.textContent = "Not set";
+          // Clear manual input too
+          const manualInput = document.getElementById("newSessionWorkdirManual");
+          if (manualInput) manualInput.value = "";
+          // Disable and uncheck the init checkbox when workdir is cleared
+          const initCheckbox = document.getElementById("newSessionRunInit");
+          if (initCheckbox) {
+            initCheckbox.disabled = true;
+            initCheckbox.checked = false;
+          }
         });
       }
 
@@ -2190,6 +2263,7 @@
           const name = newSessionName.value.trim();
           if (!name) return;
           const provider = newSessionModel.value;
+          const runInit = document.getElementById("newSessionRunInit").checked;
           try {
             const resp = await fetch("/sessions", {
               method: "POST",
@@ -2197,7 +2271,8 @@
               body: JSON.stringify({
                 name,
                 provider,
-                workdir: newSessionWorkdirValue || undefined
+                workdir: newSessionWorkdirValue || undefined,
+                run_init: runInit
               })
             });
             if (!resp.ok) {
@@ -2206,7 +2281,11 @@
               return;
             }
             closeAddSessionModal();
-            window.location.href = `/chat/${encodeURIComponent(name)}`;
+            // Redirect with init flag if applicable
+            const redirectUrl = runInit 
+              ? `/chat/${encodeURIComponent(name)}?initializing=true`
+              : `/chat/${encodeURIComponent(name)}`;
+            window.location.href = redirectUrl;
           } catch (err) {
             console.error("Failed to create session:", err);
             alert("Failed to create session");
@@ -2699,6 +2778,18 @@
 
       if (selectedSession && sessionStatus && sessionStatus[selectedSession] === "running") {
         attachToRunning(selectedSession);
+      }
+      
+      // Check if we're initializing and show status message
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('initializing') === 'true' && selectedSession) {
+        const initMsg = document.createElement('div');
+        initMsg.className = 'message system';
+        initMsg.innerHTML = '<div class="markdown"><p>🔄 <strong>Initializing session...</strong></p><p>Running /init to analyze your codebase and generate context. This may take a few minutes depending on the size of the folder.</p></div>';
+        messages.appendChild(initMsg);
+        scrollToBottom();
+        // Clear the query param from URL without reload
+        window.history.replaceState({}, '', window.location.pathname);
       }
 
       if (menuToggle && menuOverlay) {

@@ -2791,6 +2791,8 @@ def create_session():
     if provider not in SUPPORTED_PROVIDERS:
         provider = DEFAULT_PROVIDER
     workdir = (body.get("workdir") or "").strip()
+    run_init = body.get("run_init", False)
+    
     with _SESSION_LOCK:
         data = _load_sessions()
         if name in data:
@@ -2806,8 +2808,8 @@ def create_session():
         data[name] = record
         _save_sessions(data)
     
-    # Auto-init if workdir is provided
-    if workdir:
+    # Auto-init if requested and workdir is provided
+    if workdir and run_init:
         try:
             logger.info(f"Auto-init for session '{name}' with workdir: {workdir}")
             # Run /init in background to establish context
@@ -2835,22 +2837,24 @@ def create_session():
                         proc, args = _run_copilot_exec(init_prompt, cwd, config, extra_args=["--allow-all-paths"], timeout_sec=120, resume_session_id=None)
                         logger.info(f"Auto-init completed for Copilot session '{name}'")
                     elif provider == "claude":
-                        # Claude: Request to create CLAUDE.md with --allow-all-paths permission
-                        init_prompt = f"/init and create a CLAUDE.md file in {cwd}"
+                        # Claude: Run /init with bypass permissions
                         claude_path = _resolve_claude_path(config)
                         if claude_path:
-                            args = [claude_path, "--allow-all-paths", "-p", init_prompt]
+                            args = [claude_path, "--dangerously-skip-permissions", "-p", "/init"]
                             proc = subprocess.run(
                                 args,
                                 cwd=cwd,
                                 capture_output=True,
                                 text=True,
                                 encoding="utf-8",
-                                timeout=120,
+                                timeout=240,  # 4 minutes for Claude
                             )
-                            logger.info(f"Auto-init completed for Claude session '{name}'")
+                            if proc.returncode != 0:
+                                logger.error(f"Claude auto-init failed: {proc.stderr or proc.stdout}")
+                            else:
+                                logger.info(f"Auto-init completed for Claude session '{name}'")
                     elif provider == "gemini":
-                        # Gemini might not support /init - skip for now
+                        # Gemini: Skip for now - has issues with tool execution
                         logger.info(f"Skipping auto-init for Gemini (not supported)")
                 except Exception as e:
                     logger.warning(f"Auto-init failed for session '{name}': {e}")

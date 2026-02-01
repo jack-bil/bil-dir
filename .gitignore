@@ -15,6 +15,12 @@ mcp.json
 context/
 providers/
 
+# Auto-generated provider instruction files
+COPILOT.md
+CLAUDE.md
+AGENT.md
+GEMINI.md
+
 # Legacy Codex-prefixed files (backwards compatibility)
 .codex/
 .client_config.json
@@ -51,3 +57,7 @@ PHASE2_VERIFICATION.md
 enhancements.md
 debug_*.png
 *_debug.*
+
+# Generated installer files
+start.bat
+start.command
