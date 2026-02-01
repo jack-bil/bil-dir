@@ -2805,6 +2805,33 @@ def create_session():
             record["workdir"] = workdir
         data[name] = record
         _save_sessions(data)
+    
+    # Auto-init if workdir is provided
+    if workdir:
+        try:
+            logger.info(f"Auto-init for session '{name}' with workdir: {workdir}")
+            # Run /init in background to establish context
+            def run_init():
+                try:
+                    cwd = _safe_cwd(workdir)
+                    config = _get_provider_config()
+                    
+                    if provider == "codex":
+                        _run_codex_exec("/init", cwd, extra_args=None, timeout_sec=60, resume_session_id=session_id, json_events=False)
+                    elif provider == "copilot":
+                        _run_copilot_exec("/init", cwd, config, extra_args=None, timeout_sec=60, resume_session_id=session_id)
+                    elif provider == "gemini":
+                        _run_gemini_exec("/init", [], config, timeout_sec=60, cwd=cwd, resume_session_id=session_id)
+                    elif provider == "claude":
+                        _run_claude_exec("/init", config, timeout_sec=60, cwd=cwd, resume_session_id=session_id)
+                    logger.info(f"Auto-init completed for session '{name}'")
+                except Exception as e:
+                    logger.warning(f"Auto-init failed for session '{name}': {e}")
+            
+            threading.Thread(target=run_init, daemon=True).start()
+        except Exception as e:
+            logger.warning(f"Failed to start auto-init thread: {e}")
+    
     _broadcast_sessions_snapshot()
     return jsonify({"ok": True, "name": name, "provider": provider})
 
