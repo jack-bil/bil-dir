@@ -3,16 +3,27 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 
-# Runtime data
+# Runtime data files
+client_config.json
+history.json
+log.jsonl
+sessions.json
+tasks.json
+mcp.json
+
+# Context and provider configs
+context/
+providers/
+
+# Legacy Codex-prefixed files (backwards compatibility)
+.codex/
 .client_config.json
 .codex_history.json
 .codex_log.jsonl
 .codex_sessions.json
 .codex_tasks.json
+.codex_sessions/
 .mcp.json
-
-# Local Codex config (optional)
-.codex/
 
 # Enhancements tracking
 enhancements.md
@@ -20,9 +31,6 @@ enhancements.md
 # IDE/AI assistant cache
 .claude/
 .cursor/
-
-# Session data
-.codex_sessions/
 
 # Test artifacts
 .playwright-mcp/

@@ -33,16 +33,16 @@ APP = Flask(__name__, template_folder=_TEMPLATE_DIR)
 APP.config["TEMPLATES_AUTO_RELOAD"] = True
 APP.jinja_env.auto_reload = True
 
-# Restrict Codex to a safe working directory by default.
-DEFAULT_CODEX_CWD = os.environ.get("CODEX_CWD", os.getcwd())
-SESSION_STORE_PATH = os.environ.get("CODEX_SESSION_STORE", os.path.join(DEFAULT_CODEX_CWD, ".codex_sessions.json"))
-HISTORY_STORE_PATH = os.environ.get("CODEX_HISTORY_STORE", os.path.join(DEFAULT_CODEX_CWD, ".codex_history.json"))
-CLIENT_CONFIG_PATH = os.environ.get("CODEX_CLIENT_CONFIG", os.path.join(DEFAULT_CODEX_CWD, ".client_config.json"))
-LOG_STORE_PATH = os.environ.get("CODEX_LOG_STORE", os.path.join(DEFAULT_CODEX_CWD, ".codex_log.jsonl"))
-MCP_JSON_PATH = os.environ.get("MCP_JSON_PATH", os.path.join(DEFAULT_CODEX_CWD, ".mcp.json"))
-CODEX_CONFIG_PATH = os.environ.get("CODEX_CONFIG_PATH", os.path.join(DEFAULT_CODEX_CWD, ".codex", "config.toml"))
-TASK_STORE_PATH = os.environ.get("CODEX_TASK_STORE", os.path.join(DEFAULT_CODEX_CWD, ".codex_tasks.json"))
-CONTEXT_DIR = os.path.join(DEFAULT_CODEX_CWD, ".codex_sessions")
+# Working directory and data paths
+DEFAULT_CWD = os.environ.get("BILDIR_CWD", os.getcwd())
+SESSION_STORE_PATH = os.environ.get("BILDIR_SESSION_STORE", os.path.join(DEFAULT_CWD, "sessions.json"))
+HISTORY_STORE_PATH = os.environ.get("BILDIR_HISTORY_STORE", os.path.join(DEFAULT_CWD, "history.json"))
+CLIENT_CONFIG_PATH = os.environ.get("BILDIR_CLIENT_CONFIG", os.path.join(DEFAULT_CWD, "client_config.json"))
+LOG_STORE_PATH = os.environ.get("BILDIR_LOG_STORE", os.path.join(DEFAULT_CWD, "log.jsonl"))
+MCP_JSON_PATH = os.environ.get("MCP_JSON_PATH", os.path.join(DEFAULT_CWD, "mcp.json"))
+PROVIDER_CONFIG_PATH = os.environ.get("BILDIR_PROVIDER_CONFIG", os.path.join(DEFAULT_CWD, "providers", "config.toml"))
+TASK_STORE_PATH = os.environ.get("BILDIR_TASK_STORE", os.path.join(DEFAULT_CWD, "tasks.json"))
+CONTEXT_DIR = os.path.join(DEFAULT_CWD, "context")
 DEFAULT_PROVIDER = "codex"
 SUPPORTED_PROVIDERS = {"codex", "copilot", "gemini", "claude"}
 _SESSION_LOCK = threading.RLock()
@@ -59,7 +59,7 @@ def _safe_cwd(candidate):
         return os.path.abspath(candidate)
     config = _get_provider_config()
     default_cwd = (config.get("default_workdir") or "").strip() if isinstance(config, dict) else ""
-    return os.path.abspath(default_cwd or DEFAULT_CODEX_CWD)
+    return os.path.abspath(default_cwd or DEFAULT_CWD)
 
 
 def _run_codex_exec(
@@ -267,7 +267,7 @@ def _write_codex_mcp_config(mcp_data):
             entries = ", ".join(f"{k}={_toml_escape(v)}" for k, v in env.items())
             lines.append(f"env = {{ {entries} }}")
         lines.append("")
-    path = pathlib.Path(CODEX_CONFIG_PATH)
+    path = pathlib.Path(PROVIDER_CONFIG_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
     return str(path)
@@ -472,6 +472,37 @@ def _build_tasks_snapshot():
     for task in ordered:
         task["schedule_summary"] = _schedule_summary(task)
     return {"count": len(ordered), "tasks": ordered}
+
+
+def _migrate_legacy_files():
+    """Migrate old .codex_ prefixed files to new names."""
+    migrations = [
+        (".codex_sessions.json", SESSION_STORE_PATH),
+        (".codex_tasks.json", TASK_STORE_PATH),
+        (".codex_history.json", HISTORY_STORE_PATH),
+        (".codex_log.jsonl", LOG_STORE_PATH),
+        (".client_config.json", CLIENT_CONFIG_PATH),
+        (".mcp.json", MCP_JSON_PATH),
+    ]
+    
+    for old_name, new_path in migrations:
+        old_path = os.path.join(DEFAULT_CWD, old_name)
+        if os.path.exists(old_path) and not os.path.exists(new_path):
+            try:
+                os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                shutil.copy2(old_path, new_path)
+                logger.info(f"Migrated {old_name} -> {os.path.basename(new_path)}")
+            except Exception as e:
+                logger.warning(f"Failed to migrate {old_name}: {e}")
+    
+    # Migrate context directory
+    old_context = os.path.join(DEFAULT_CWD, ".codex_sessions")
+    if os.path.exists(old_context) and not os.path.exists(CONTEXT_DIR):
+        try:
+            shutil.copytree(old_context, CONTEXT_DIR)
+            logger.info(f"Migrated .codex_sessions/ -> context/")
+        except Exception as e:
+            logger.warning(f"Failed to migrate context directory: {e}")
 
 
 def _load_sessions():
@@ -2815,6 +2846,9 @@ def delete_session(name):
 
 
 if __name__ == "__main__":
+    # Migrate legacy .codex_ files to new names
+    _migrate_legacy_files()
+    
     port = int(os.environ.get("PORT", "5025"))
     threading.Thread(target=_task_scheduler_loop, daemon=True).start()
     APP.run(host="0.0.0.0", port=port, debug=False, threaded=True)

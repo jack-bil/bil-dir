@@ -17,12 +17,12 @@ pip install -r requirements.txt
 
 ### First Run
 When you first run the app, it will automatically create these files in the project directory:
-- `.codex_sessions.json` - Session storage
-- `.codex_tasks.json` - Task storage
-- `.codex_history.json` - Command history
-- `.codex_log.jsonl` - Event logs
-- `.client_config.json` - UI preferences
-- `.codex_sessions/` - Context files (if using Codex)
+- `sessions.json` - Session storage
+- `tasks.json` - Task storage
+- `history.json` - Command history
+- `log.jsonl` - Event logs
+- `client_config.json` - UI preferences
+- `context/` - Context files directory
 
 These files are git-ignored and will be created with default values on first startup.
 
