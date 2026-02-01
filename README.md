@@ -33,7 +33,7 @@ http://127.0.0.1:5025/chat
 Use Waitress to handle SSE and concurrent requests safely.
 ```powershell
 pip install -r requirements.txt
-.\scripts\run_waitress.ps1 -Port 5025
+.\scripts\bildir.ps1 -Port 5025
 ```
 
 ## CLIs required
