@@ -21,7 +21,7 @@
         --assistant: #121827;
       }
       * { box-sizing: border-box; }
-      body {
+      html, body {
         margin: 0;
         font-family: "IBM Plex Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
         color: var(--ink);
@@ -29,6 +29,9 @@
                     radial-gradient(900px 400px at 95% 10%, #1d3b2f, transparent),
                     var(--bg);
         min-height: 100vh;
+      }
+      body {
+        overflow: hidden;
       }
       header {
         padding: 16px 20px;
@@ -39,6 +42,12 @@
         gap: 12px;
       }
       .mobile-only { display: none; }
+      body.nav-collapsed main {
+        grid-template-columns: 1fr;
+      }
+      body.nav-collapsed .left-col {
+        display: none;
+      }
       h1 { margin: 0; font-size: 26px; }
       a { color: var(--accent); text-decoration: none; }
       .icon-btn {
@@ -53,6 +62,11 @@
         justify-content: center;
         cursor: pointer;
         font-size: 16px;
+      }
+      .icon-btn svg {
+        width: 18px;
+        height: 18px;
+        display: block;
       }
       .icon-btn.active-nav {
         border-color: var(--accent);
@@ -70,20 +84,29 @@
         padding: 0 16px 16px;
         max-width: none;
         margin: 0;
+        height: calc(100vh - 68px);
+        overflow: hidden;
+        align-items: stretch;
       }
       .left-col {
         display: flex;
         flex-direction: column;
         gap: 12px;
+        height: 100%;
+        min-height: 0;
       }
       .panel {
-        background: var(--panel);
+        background: transparent;
         border: 1px solid var(--border);
         border-radius: 14px;
         padding: 16px;
         box-shadow: 0 12px 30px rgba(0,0,0,0.2);
         overflow-y: auto;
-        max-height: calc(100vh - 120px);
+        max-height: none;
+      }
+      .left-col .sessions {
+        flex: 1;
+        min-height: 0;
       }
       .overlay {
         position: fixed;
@@ -268,19 +291,39 @@
         padding: 6px 2px;
       }
       .search-panel {
-        padding: 10px;
+        padding: 0;
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        background: none;
+        border-radius: 0;
+        margin-bottom: 8px;
+        border: 0;
+        box-shadow: none;
+        overflow: visible;
+      }
+      .search-panel-inner {
+        position: relative;
       }
       #navSearch {
         width: 100%;
         border-radius: 12px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(16, 20, 28, 0.8);
-        color: var(--ink);
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        background: rgba(12, 18, 28, 0.86);
+        color: #e6edf3;
         padding: 10px 12px;
         font-size: 13px;
+        min-height: 40px;
+        box-shadow: inset 0 0 0 1px rgba(11, 15, 22, 0.6);
+        font-weight: 600;
+        position: relative;
+        z-index: 1;
       }
       #navSearch::placeholder {
-        color: rgba(240, 240, 240, 0.45);
+        color: rgba(203, 213, 225, 0.95);
+        opacity: 1;
+        font-weight: 600;
+        text-shadow: 0 1px 6px rgba(0,0,0,0.45);
       }
       .sessions-header {
         display: flex;
@@ -1305,7 +1348,7 @@
           backdrop-filter: blur(10px);
         }
         .mobile-only { display: inline-flex; }
-        .sessions {
+        .left-col {
           position: fixed;
           top: 60px;
           left: 0;
@@ -1316,6 +1359,20 @@
           z-index: 25;
           padding: 16px;
           overflow-y: auto;
+          background: var(--panel);
+          border-right: 1px solid var(--border);
+        }
+        .search-panel {
+          top: 8px;
+        }
+        .sessions {
+          position: static;
+          transform: none;
+          width: 100%;
+          height: auto;
+          padding: 0;
+          overflow: visible;
+          background: transparent;
         }
         .sessions .section-header {
           position: sticky;
@@ -1333,7 +1390,7 @@
         .sessions .section-toggle {
           font-size: 16px;
         }
-        body.menu-open .sessions {
+        body.menu-open .left-col {
           transform: translateX(0);
         }
         body.menu-open .overlay {
@@ -1362,12 +1419,14 @@
       /* Custom scrollbars - v2.0 enhanced */
       .messages::-webkit-scrollbar,
       .sessions::-webkit-scrollbar,
+      .left-col::-webkit-scrollbar,
       .task-output-content::-webkit-scrollbar {
         width: 12px;
         height: 12px;
       }
       .messages::-webkit-scrollbar-track,
       .sessions::-webkit-scrollbar-track,
+      .left-col::-webkit-scrollbar-track,
       .task-output-content::-webkit-scrollbar-track {
         background: rgba(15, 17, 22, 0.4);
         border-radius: 8px;
@@ -1375,6 +1434,7 @@
       }
       .messages::-webkit-scrollbar-thumb,
       .sessions::-webkit-scrollbar-thumb,
+      .left-col::-webkit-scrollbar-thumb,
       .task-output-content::-webkit-scrollbar-thumb {
         background: rgba(71, 85, 105, 0.4);
         border-radius: 8px;
@@ -1383,17 +1443,20 @@
       }
       .messages::-webkit-scrollbar-thumb:hover,
       .sessions::-webkit-scrollbar-thumb:hover,
+      .left-col::-webkit-scrollbar-thumb:hover,
       .task-output-content::-webkit-scrollbar-thumb:hover {
         background: rgba(100, 116, 139, 0.6);
         border-color: rgba(15, 17, 22, 0.7);
       }
       .messages::-webkit-scrollbar-thumb:active,
       .sessions::-webkit-scrollbar-thumb:active,
+      .left-col::-webkit-scrollbar-thumb:active,
       .task-output-content::-webkit-scrollbar-thumb:active {
         background: rgba(148, 163, 184, 0.7);
       }
       .messages,
       .sessions,
+      .left-col,
       .task-output-content {
         scrollbar-width: thin;
         scrollbar-color: rgba(71, 85, 105, 0.4) rgba(15, 17, 22, 0.4);
@@ -1427,13 +1490,23 @@
   <body data-selected="{{ selected or '' }}" data-default-workdir="{{ default_workdir or '' }}" data-session-workdir="{{ session_workdir or '' }}" data-master="{{ 'true' if view_mode == 'master' else 'false' }}">
     <header>
       <div class="row">
-        <button class="icon-btn mobile-only" id="menuToggle" type="button" aria-label="Menu" title="Menu">☰</button>
+        <button class="icon-btn" id="menuToggle" type="button" aria-label="Menu" title="Menu">☰</button>
         <h1>Bil-dir</h1>
       </div>
       <div class="row">
         <div class="muted">
-          <a class="icon-btn {% if view_mode == 'master' %}active-nav{% endif %}" href="/master" aria-label="Master console" title="Master console">🧭</a>
-          <a class="icon-btn" href="/config" aria-label="Config" title="Config">⚙</a>
+          <a class="icon-btn {% if view_mode == 'master' %}active-nav{% endif %}" href="/master" aria-label="Master console" title="Master console">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M8.5 12h7M12 8.5v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+            </svg>
+          </a>
+          <a class="icon-btn" href="/config" aria-label="Config" title="Config">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M11.5 2.5h1l.6 2.6c.6.1 1.2.3 1.7.6l2.2-1.5.7.7-1.5 2.2c.3.5.5 1.1.6 1.7l2.6.6v1l-2.6.6c-.1.6-.3 1.2-.6 1.7l1.5 2.2-.7.7-2.2-1.5c-.5.3-1.1.5-1.7.6l-.6 2.6h-1l-.6-2.6c-.6-.1-1.2-.3-1.7-.6l-2.2 1.5-.7-.7 1.5-2.2c-.3-.5-.5-1.1-.6-1.7l-2.6-.6v-1l2.6-.6c.1-.6.3-1.2.6-1.7L5 4.6l.7-.7 2.2 1.5c.5-.3 1.1-.5 1.7-.6l.6-2.6Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+              <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/>
+            </svg>
+          </a>
         </div>
       </div>
     </header>
@@ -1542,9 +1615,11 @@
     </div>
     <main>
       <div class="left-col">
-        <div class="panel search-panel">
-          <label class="visually-hidden" for="navSearch">Search</label>
-          <input id="navSearch" type="text" placeholder="Search sessions, tasks, orchestrators..." autocomplete="off" />
+        <div class="panel search-panel" id="searchPanel">
+          <div class="search-panel-inner">
+            <label class="visually-hidden" for="navSearch">Search</label>
+            <input id="navSearch" type="text" placeholder="Search sessions, tasks, orchestrators..." autocomplete="off" />
+          </div>
         </div>
       <section class="panel sessions">
         <div class="section-header">
@@ -1942,6 +2017,7 @@
       const orchToggle = document.getElementById("orchToggle");
       const orchBody = document.getElementById("orchBody");
       const navSearch = document.getElementById("navSearch");
+      const searchPanel = document.getElementById("searchPanel");
       const orchestratorsList = document.getElementById("orchestratorsList");
       const addOrchBtn = document.getElementById("addOrchBtn");
       const addOrchOverlay = document.getElementById("addOrchOverlay");
@@ -4251,7 +4327,12 @@
       if (menuToggle && menuOverlay) {
         const closeMenu = () => document.body.classList.remove("menu-open");
         menuToggle.addEventListener("click", () => {
-          document.body.classList.toggle("menu-open");
+          const isMobile = window.matchMedia("(max-width: 900px)").matches;
+          if (isMobile) {
+            document.body.classList.toggle("menu-open");
+          } else {
+            document.body.classList.toggle("nav-collapsed");
+          }
         });
         menuOverlay.addEventListener("click", closeMenu);
         window.addEventListener("keydown", (e) => {
@@ -4349,6 +4430,9 @@
       function applyNavFilter() {
         if (!navSearch) return;
         const q = navSearch.value || "";
+        if (searchPanel) {
+          searchPanel.classList.toggle("has-value", q.trim().length > 0);
+        }
         filterListByQuery(document.querySelector(".sessions-list"), q);
         filterListByQuery(document.getElementById("tasksList"), q);
         filterListByQuery(document.getElementById("orchestratorsList"), q);
