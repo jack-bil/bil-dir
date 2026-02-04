@@ -54,6 +54,10 @@
         cursor: pointer;
         font-size: 16px;
       }
+      .icon-btn.active-nav {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 1px rgba(126, 223, 135, 0.4);
+      }
       #menuToggle {
         font-size: 20px;
         width: 38px;
@@ -66,6 +70,11 @@
         padding: 0 16px 16px;
         max-width: none;
         margin: 0;
+      }
+      .left-col {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
       }
       .panel {
         background: var(--panel);
@@ -242,6 +251,22 @@
         flex-direction: column;
         max-height: calc(100vh - 96px);
       }
+      .master-card {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        padding: 10px 12px;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.25);
+        margin-bottom: 10px;
+      }
+      .master-card .session-card {
+        border: 0;
+        background: transparent;
+        padding: 6px 2px;
+      }
       .sessions-header {
         display: flex;
         align-items: center;
@@ -345,6 +370,13 @@
       .task-detail-view {
         padding: 20px;
         overflow-y: auto;
+      }
+      #masterDetailView {
+        padding: 14px 16px 8px;
+      }
+      #masterDetailView .task-header {
+        margin-bottom: 12px;
+        padding-bottom: 10px;
       }
       .task-header {
         display: flex;
@@ -796,6 +828,10 @@
       .terminal .line.code-fence {
         color: var(--cli-activity, #38bdf8);
       }
+      .master-prefix {
+        font-weight: 700;
+        color: var(--session-color, #7fdbff);
+      }
       .ansi-bold { font-weight: 700; }
       .ansi-dim { opacity: 0.8; }
       .ansi-fg-black { color: #0f172a; }
@@ -962,6 +998,31 @@
         display: flex;
         gap: 10px;
         align-items: flex-end;
+        position: relative;
+        --prompt-font-size: 15px;
+        --prompt-pad-x: 10px;
+        --prompt-pad-y: 8px;
+      }
+      .prompt-row.master-input textarea {
+        color: transparent;
+        caret-color: var(--ink);
+      }
+        .prompt-mirror {
+          position: absolute;
+          pointer-events: none;
+          white-space: pre-wrap;
+          word-break: break-word;
+          font-family: inherit;
+          font-size: var(--prompt-font-size);
+          line-height: 1.4;
+          color: var(--ink);
+          padding: var(--prompt-pad-y) var(--prompt-pad-x);
+          box-sizing: border-box;
+        }
+      .prompt-mirror .master-prefix {
+        font-weight: 400;
+        text-shadow: 0.7px 0 0 currentColor, -0.7px 0 0 currentColor;
+        color: var(--session-color, #7fdbff);
       }
       .send-btn {
         width: 32px;
@@ -1016,7 +1077,8 @@
         max-height: 200px;
         overflow-y: hidden;
         line-height: 1.4;
-        padding: 8px 10px;
+        font-size: var(--prompt-font-size);
+        padding: var(--prompt-pad-y) var(--prompt-pad-x);
         box-sizing: border-box;
       }
       #prompt::-webkit-scrollbar {
@@ -1347,7 +1409,7 @@
       }
     </style>
   </head>
-  <body data-selected="{{ selected or '' }}" data-default-workdir="{{ default_workdir or '' }}" data-session-workdir="{{ session_workdir or '' }}">
+  <body data-selected="{{ selected or '' }}" data-default-workdir="{{ default_workdir or '' }}" data-session-workdir="{{ session_workdir or '' }}" data-master="{{ 'true' if view_mode == 'master' else 'false' }}">
     <header>
       <div class="row">
         <button class="icon-btn mobile-only" id="menuToggle" type="button" aria-label="Menu" title="Menu">☰</button>
@@ -1355,6 +1417,7 @@
       </div>
       <div class="row">
         <div class="muted">
+          <a class="icon-btn {% if view_mode == 'master' %}active-nav{% endif %}" href="/master" aria-label="Master console" title="Master console">🧭</a>
           <a class="icon-btn" href="/config" aria-label="Config" title="Config">⚙</a>
         </div>
       </div>
@@ -1463,6 +1526,30 @@
       </form>
     </div>
     <main>
+      <div class="left-col">
+        {% set has_running = false %}
+        {% if session_status %}
+          {% for _name, _status in session_status.items() %}
+            {% if _status == 'running' %}
+              {% set has_running = true %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        <div class="master-card panel">
+          <a class="session-card" href="/master">
+            <div class="meta">
+              <strong>Master Console</strong>
+              <span class="provider-tag">system</span>
+            </div>
+            <div class="session-actions">
+              <span
+                class="status-dot {% if has_running %}running{% endif %}"
+                aria-label="status"
+                title="{% if has_running %}Running{% else %}Idle{% endif %}"
+              ></span>
+            </div>
+          </a>
+        </div>
       <section class="panel sessions">
         <div class="section-header">
           <button class="section-toggle" id="sessionsToggle" type="button" aria-expanded="true">
@@ -1582,6 +1669,7 @@
           </ul>
         </div>
       </section>
+      </div>
       <section class="panel chat">
         {% if view_mode == 'task' and selected_task %}
         <div class="task-detail-view" id="taskDetailView">
@@ -1759,6 +1847,41 @@
             <pre class="task-output-content">{{ selected_orchestrator.history_text }}</pre>
           </div>
         </div>
+        {% elif view_mode == 'master' %}
+        <div class="task-detail-view" id="masterDetailView">
+          <div class="task-header">
+            <h2>Master Console</h2>
+            <div class="task-header-actions">
+              <span class="muted">Live across all sessions</span>
+            </div>
+          </div>
+        </div>
+        <div class="messages-shell">
+          <div class="messages" id="messages"></div>
+        <form id="chatForm" class="composer">
+          <input id="session_name" name="session_name" type="hidden" value="" />
+        <div>
+          <label class="visually-hidden" for="prompt">Message</label>
+          <div class="prompt-row">
+            <textarea id="prompt" name="prompt" rows="1" placeholder="@@session-name: message"></textarea>
+            <button type="submit" class="send-btn" aria-label="Send">↑</button>
+          </div>
+        </div>
+        <select id="providerSelect" name="provider" class="hidden">
+          <option value="codex">codex</option>
+          <option value="copilot">copilot</option>
+          <option value="gemini">gemini</option>
+          <option value="claude">claude</option>
+        </select>
+        <input type="checkbox" id="force_new" class="hidden" />
+        <div class="cwd-row hidden">
+          <span>Working directory:</span>
+          <span class="cwd-path" id="cwdLabel"></span>
+          <button type="button" class="cwd-btn" id="cwdPickBtn">Choose</button>
+        </div>
+        <div class="status" id="statusLine"></div>
+      </form>
+        </div>
         {% else %}
         <div class="empty-state" id="emptyState">
           <div class="empty-content">
@@ -1852,6 +1975,9 @@
       let orchCache = {};
       const initialMessages = {{ history_messages|tojson }};
       const initialToolOutputs = {{ history_tools|tojson }};
+      const masterMode = document.body.dataset.master === "true";
+      const masterMessages = {{ master_messages|tojson if master_messages is defined else "[]" }};
+      const sessionNameList = {{ session_list|map(attribute='name')|list|tojson if session_list is defined else "[]" }};
       console.log("Loaded history - messages:", initialMessages?.length || 0, "tools:", initialToolOutputs?.length || 0);
       const sessionStatus = {{ session_status|tojson }};
       const selectedProvider = "{{ selected_provider or default_provider }}";
@@ -1866,7 +1992,7 @@
       
       function updateEmptyState() {
         const sessionNameEl = document.getElementById("session_name");
-        const hasSession = sessionNameEl ? sessionNameEl.value.trim() !== "" : false;
+        const hasSession = masterMode ? true : (sessionNameEl ? sessionNameEl.value.trim() !== "" : false);
         if (emptyState) {
           emptyState.classList.toggle("active", !hasSession);
         }
@@ -2013,6 +2139,9 @@
         if (!container || !text) return;
         const pre = ensureTerminalBody(container);
         let inCodeBlock = container.dataset.codeBlock === "true";
+        const prefix = container.dataset.masterPrefix || "";
+        const hasPrefix = masterMode && prefix && container.dataset.masterStarted !== "true";
+        let prefixUsed = false;
         text.split(/\r?\n/).forEach((line) => {
           const span = document.createElement("span");
           let lineKind = "";
@@ -2031,9 +2160,19 @@
           }
           span.className = `line ${kind}${lineKind ? ` ${lineKind}` : ""}`;
           const allowRich = !inCodeBlock && lineKind !== "code-fence";
-          span.innerHTML = ansiToHtml(line, { linkify: allowRich });
+          const rendered = ansiToHtml(line, { linkify: allowRich });
+          if (hasPrefix && !prefixUsed) {
+            const prefixSpan = `<span class="master-prefix">${escapeHtml(prefix)}</span>`;
+            span.innerHTML = prefixSpan + rendered;
+            prefixUsed = true;
+          } else {
+            span.innerHTML = rendered;
+          }
           pre.appendChild(span);
         });
+        if (hasPrefix && prefixUsed) {
+          container.dataset.masterStarted = "true";
+        }
         container.dataset.codeBlock = inCodeBlock ? "true" : "false";
         if (autoScroll) scrollToBottom();
       }
@@ -2066,6 +2205,26 @@
         if (!skipScroll) {
           scrollToBottom();
         }
+        return div;
+      }
+
+      function colorForSession(name) {
+        let hash = 0;
+        for (let i = 0; i < name.length; i++) {
+          hash = (hash * 31 + name.charCodeAt(i)) | 0;
+        }
+        const hue = Math.abs(hash) % 360;
+        return `hsl(${hue} 70% 70%)`;
+      }
+
+      function addMasterMessage(sessionName, text, skipScroll = false) {
+        if (!sessionName || !text) return null;
+        const div = addMessage("", "assistant", true);
+        div.dataset.masterPrefix = `@@${sessionName}: `;
+        div.dataset.masterStarted = "false";
+        div.style.setProperty("--session-color", colorForSession(sessionName));
+        updateAssistantMessage(div, text + "\n", true);
+        if (!skipScroll) scrollToBottom();
         return div;
       }
 
@@ -2119,6 +2278,17 @@
 
       function renderHistory() {
         console.log("renderHistory called, messages:", initialMessages?.length, "tools:", initialToolOutputs?.length);
+        if (masterMode) {
+          if (Array.isArray(masterMessages) && masterMessages.length) {
+            masterMessages.forEach((item) => {
+              if (item && item.session_name && item.text) {
+                addMasterMessage(item.session_name, item.text, true);
+              }
+            });
+          }
+          scrollToBottom();
+          return;
+        }
         if (Array.isArray(initialMessages)) {
           initialMessages.forEach((msg) => {
             if (msg && msg.text && msg.role) {
@@ -2146,6 +2316,33 @@
       }
 
       renderHistory();
+      if (masterMode) {
+        let masterSnapshotApplied = false;
+        const masterSource = new EventSource("/master/stream");
+        masterSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === "snapshot") {
+              if (!masterSnapshotApplied && (!Array.isArray(masterMessages) || masterMessages.length === 0)) {
+                const items = data.messages || [];
+                items.forEach((item) => {
+                  if (item && item.session_name && item.text) {
+                    addMasterMessage(item.session_name, item.text, true);
+                  }
+                });
+                scrollToBottom();
+              }
+              masterSnapshotApplied = true;
+              return;
+            }
+            if (data.type === "message" && data.session_name && data.text) {
+              addMasterMessage(data.session_name, data.text);
+            }
+          } catch (err) {
+            console.error("Master stream error:", err);
+          }
+        };
+      }
       if (providerSelect) {
         providerSelect.value = selectedProvider || "codex";
         providerSelect.disabled = !selectedSession;
@@ -2212,6 +2409,7 @@
         function autoResize() {
           promptInput.style.height = 'auto';
           promptInput.style.height = Math.min(promptInput.scrollHeight, 200) + 'px';
+          renderPromptMirror();
         }
         
         promptInput.addEventListener('input', autoResize);
@@ -2340,6 +2538,9 @@
               if (evt.type === "item.completed" && evt.item) {
                 if (evt.item.type === "agent_message" && evt.item.text) {
                   updateAssistantMessage(current, evt.item.text + "\n");
+                } else if (masterMode) {
+                  // Skip non-chat activity in master console
+                  return;
                 } else if (evt.item.type === "reasoning" && evt.item.text) {
                   if (cliMode) {
                     appendTerminalBlock(current, evt.item.text, "activity");
@@ -2428,7 +2629,8 @@
 
       async function streamResponse(payload) {
         const sessionName = payload && payload.session_name ? payload.session_name : selectedSession;
-        const streamProvider = payload && payload.provider ? payload.provider : (providerSelect ? providerSelect.value : "codex");
+        const hasProvider = payload && Object.prototype.hasOwnProperty.call(payload, "provider");
+        const streamProvider = hasProvider ? payload.provider : (providerSelect ? providerSelect.value : "codex");
         document.body.dataset.provider = streamProvider || "codex";
         if (sessionName) {
           applyStatus(sessionName, "running");
@@ -2468,8 +2670,9 @@
           const reader = resp.body.getReader();
           const decoder = new TextDecoder();
           let buffer = "";
+          const renderStream = !masterMode;
           let activityPanel = null;
-          if (!cliMode) {
+          if (!cliMode && renderStream) {
             activityPanel = document.createElement("details");
             activityPanel.className = "tools";
             activityPanel.open = true;
@@ -2481,8 +2684,15 @@
             activityPanel.appendChild(pre);
             messages.appendChild(activityPanel);
           }
-          let current = addMessage("", "assistant");
-          currentStreamingMessage = current;
+          let current = null;
+          if (renderStream) {
+            current = addMessage("", "assistant");
+            if (sessionName) {
+              current.dataset.masterPrefix = `@@${sessionName}: `;
+              current.dataset.masterStarted = "false";
+            }
+          }
+          currentStreamingMessage = renderStream ? current : null;
           setWorking(true, "Thinking...");
           while (true) {
             const { value, done } = await reader.read();
@@ -2506,10 +2716,14 @@
                     }
                   } else if (chunkEvent === "error") {
                     setWorking(false, "Error");
-                    if (cliMode) {
-                      appendTerminalBlock(current, "Error.", "error");
-                    } else {
-                      appendActivity(activityPanel, "Error.");
+                    if (renderStream && current) {
+                      if (cliMode) {
+                        appendTerminalBlock(current, "Error.", "error");
+                      } else {
+                        appendActivity(activityPanel, "Error.");
+                      }
+                    } else if (sessionName) {
+                      addMasterMessage(sessionName, "Error.");
                     }
                     if (sessionName) {
                       applyStatus(sessionName, "idle");
@@ -2520,15 +2734,21 @@
                   if (chunkEvent === "error") {
                     const errText = line.replace("data:", "").trim();
                     if (errText) {
-                      if (cliMode) {
-                        appendTerminalBlock(current, errText, "error");
-                      } else {
-                        appendTool(errText + "\n");
-                        appendActivity(activityPanel, errText);
+                      if (renderStream && current) {
+                        if (cliMode) {
+                          appendTerminalBlock(current, errText, "error");
+                        } else {
+                          appendTool(errText + "\n");
+                          appendActivity(activityPanel, errText);
+                        }
+                      } else if (sessionName) {
+                        addMasterMessage(sessionName, errText);
                       }
                     }
                   } else if (!chunkEvent || chunkEvent === "message") {
-                    handleEventLine(line, current, activityPanel);
+                    if (renderStream) {
+                      handleEventLine(line, current, activityPanel);
+                    }
                   }
                 }
               }
@@ -2558,33 +2778,138 @@
         streamResponse({ session_name: name, provider, attach: true });
       }
 
+      function parseMasterInput(text) {
+        if (!text || !text.startsWith("@@")) return null;
+        const rest = text.slice(2).trim();
+        if (!rest) return null;
+        let name = "";
+        let message = "";
+        const colonIdx = rest.indexOf(":");
+        if (colonIdx >= 0) {
+          name = rest.slice(0, colonIdx).trim();
+          message = rest.slice(colonIdx + 1).trim();
+        } else {
+          const parts = rest.split(/\s+/);
+          name = parts.shift() || "";
+          message = parts.join(" ").trim();
+        }
+        if (!name || !message) return null;
+        return { name, message };
+      }
+
+      function getMasterPrefixRange(value) {
+        if (!value.startsWith("@@")) return null;
+        const colonIdx = value.indexOf(":");
+        if (colonIdx === -1) return null;
+        const prefix = value.slice(0, colonIdx + 1);
+        return { start: 0, end: prefix.length, prefix };
+      }
+
+      function getSessionNameList() {
+        if (Array.isArray(sessionNameList) && sessionNameList.length) {
+          return sessionNameList.slice();
+        }
+        return Array.from(document.querySelectorAll(".sessions-list li[data-session-name]"))
+          .map((el) => el.getAttribute("data-session-name") || "")
+          .filter(Boolean);
+      }
+
+      function autocompleteSessionName(value) {
+        if (!value.startsWith("@@")) return null;
+        const after = value.slice(2);
+        const match = after.match(/^([^\s:]+)(.*)$/);
+        if (!match) return null;
+        const partial = match[1];
+        const tail = match[2] || "";
+        if (!partial) return null;
+        const list = getSessionNameList();
+        const found = list.find((name) => name.toLowerCase().startsWith(partial.toLowerCase()));
+        if (!found) return null;
+        const suffix = tail.startsWith(":") || tail.startsWith(" ") ? tail : "";
+        if (!suffix) {
+          return `@@${found}: `;
+        }
+        return `@@${found}${suffix}`;
+      }
+
+      function renderPromptMirror() {
+        if (!masterMode || !promptInput) return;
+        const row = promptInput.closest(".prompt-row");
+        if (!row) return;
+        let mirror = row.querySelector(".prompt-mirror");
+          if (!mirror) {
+            mirror = document.createElement("div");
+            mirror.className = "prompt-mirror";
+            row.insertBefore(mirror, promptInput);
+            row.classList.add("master-input");
+          }
+          const rowRect = row.getBoundingClientRect();
+          const inputRect = promptInput.getBoundingClientRect();
+          if (rowRect.width && inputRect.width) {
+            mirror.style.left = `${inputRect.left - rowRect.left}px`;
+            mirror.style.top = `${inputRect.top - rowRect.top}px`;
+            mirror.style.width = `${inputRect.width}px`;
+            mirror.style.height = `${inputRect.height}px`;
+          }
+          const value = promptInput.value || "";
+          const range = getMasterPrefixRange(value);
+        if (range) {
+          const rest = value.slice(range.end);
+          const name = range.prefix.replace(/^@@/, "").replace(/:$/, "");
+          const color = colorForSession(name);
+          mirror.innerHTML = `<span class="master-prefix" style="--session-color:${color}">${escapeHtml(range.prefix)}</span>${escapeHtml(rest)}`;
+        } else {
+          mirror.textContent = value;
+        }
+      }
+
       if (form) {
         form.addEventListener("submit", async (e) => {
           e.preventDefault();
-          const sessionName = document.getElementById("session_name").value.trim();
           const prompt = document.getElementById("prompt").value.trim();
-        const forceNew = document.getElementById("force_new").checked;
-        if (!sessionName || !prompt) return;
+          if (!prompt) return;
+          if (masterMode) {
+            const parsed = parseMasterInput(prompt);
+            if (!parsed) {
+              alert("Use @@session-name: message (or @@session message).");
+              return;
+            }
+            addMessage(`@@${parsed.name}: ${parsed.message}`, "user");
+            promptInput.value = "";
+            renderPromptMirror();
+            const payload = {
+              session_name: parsed.name,
+              prompt: parsed.message,
+              provider: null,
+            };
+            setWorking(true, "Thinking...");
+            await streamResponse(payload);
+            return;
+          }
 
-        addMessage(prompt, "user");
-        promptInput.value = "";
+          const sessionName = document.getElementById("session_name").value.trim();
+          const forceNew = document.getElementById("force_new").checked;
+          if (!sessionName) return;
 
-        const provider = providerSelect ? providerSelect.value : "codex";
-        const payload = {
-          session_name: sessionName,
-          prompt,
-          provider,
-        };
-        if (forceNew) {
-          payload.session_id = null;
-        }
+          addMessage(prompt, "user");
+          promptInput.value = "";
 
-        setWorking(true, "Thinking...");
-        await streamResponse(payload);
-        if (forceNew) {
-          document.getElementById("force_new").checked = false;
-          statusLine.textContent = "";
-        }
+          const provider = providerSelect ? providerSelect.value : "codex";
+          const payload = {
+            session_name: sessionName,
+            prompt,
+            provider,
+          };
+          if (forceNew) {
+            payload.session_id = null;
+          }
+
+          setWorking(true, "Thinking...");
+          await streamResponse(payload);
+          if (forceNew) {
+            document.getElementById("force_new").checked = false;
+            statusLine.textContent = "";
+          }
         });
 
         if (promptInput) {
@@ -2592,6 +2917,36 @@
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               form.requestSubmit();
+              return;
+            }
+            if (masterMode && e.key === "Tab") {
+              const next = autocompleteSessionName(promptInput.value);
+              if (next) {
+                e.preventDefault();
+                promptInput.value = next;
+                renderPromptMirror();
+                // Move caret to end after autocomplete
+                  requestAnimationFrame(() => {
+                    promptInput.focus();
+                    promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
+                  });
+              }
+            }
+            if (masterMode && e.key === "Backspace") {
+              const range = getMasterPrefixRange(promptInput.value);
+              if (range) {
+                const start = promptInput.selectionStart || 0;
+                const end = promptInput.selectionEnd || 0;
+                if (start === end && start <= range.end) {
+                  e.preventDefault();
+                  const rest = promptInput.value.slice(range.end).trimStart();
+                  promptInput.value = rest;
+                  renderPromptMirror();
+                  requestAnimationFrame(() => {
+                    promptInput.selectionStart = promptInput.selectionEnd = 0;
+                  });
+                }
+              }
             }
           });
         }
@@ -3793,11 +4148,28 @@
         if (sessionStatus && typeof sessionStatus === "object") {
           sessionStatus[name] = status;
         }
+        updateMasterCardStatus();
+      }
+
+      function updateMasterCardStatus() {
+        const masterDot = document.querySelector(".master-card .status-dot");
+        if (!masterDot || !sessionStatus || typeof sessionStatus !== "object") return;
+        const running = Object.values(sessionStatus).some((value) => value === "running");
+        if (running) {
+          masterDot.classList.add("running");
+          masterDot.setAttribute("title", "Running");
+          masterDot.setAttribute("aria-label", "Running");
+        } else {
+          masterDot.classList.remove("running");
+          masterDot.setAttribute("title", "Idle");
+          masterDot.setAttribute("aria-label", "Idle");
+        }
       }
 
       if (sessionStatus && typeof sessionStatus === "object") {
         Object.entries(sessionStatus).forEach(([name, status]) => applyStatus(name, status));
         updateProviderSelectState();
+        updateMasterCardStatus();
       }
 
       function renderSessions(sessions, statusMap) {
@@ -3872,6 +4244,7 @@
             sessionStatus[selectedSession] = statusMap[selectedSession];
             updateProviderSelectState();
           }
+          updateMasterCardStatus();
         } catch (err) {
           // Ignore errors
         }
@@ -3900,6 +4273,7 @@
               sessionStatus[selectedSession] = statusMap[selectedSession];
               updateProviderSelectState();
             }
+            updateMasterCardStatus();
           } catch (err) {
             // Ignore parse errors
           }

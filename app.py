@@ -53,6 +53,7 @@ _SESSION_STATUS = {}
 _JOBS = {}
 _SESSION_SUBSCRIBERS = set()
 _TASK_SUBSCRIBERS = set()
+_MASTER_SUBSCRIBERS = set()
 _ORCH_LOCK = threading.RLock()
 _ORCH_STATE = {}
 _PENDING_LOCK = threading.RLock()
@@ -1260,6 +1261,15 @@ def _append_history(session_id, session_name, conversation):
         data[session_id] = entry
         _save_history(data, workdir)
 
+    assistant_text = ""
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            assistant_text = msg.get("text") or ""
+            if assistant_text:
+                break
+    if assistant_text and session_name:
+        _broadcast_master_message(session_name, assistant_text)
+
 
 def _sessions_with_status(sessions):
     status = {}
@@ -1318,6 +1328,35 @@ def _broadcast_sessions_snapshot():
             dead.append(q)
     for q in dead:
         _SESSION_SUBSCRIBERS.discard(q)
+
+
+def _build_master_snapshot():
+    with _SESSION_LOCK:
+        sessions = _load_sessions()
+    session_list = _build_session_list(sessions)
+    items = []
+    for item in session_list:
+        name = item.get("name")
+        text = _get_latest_assistant_message(name)
+        if text:
+            items.append({"session_name": name, "text": text})
+    return {"messages": items}
+
+
+def _broadcast_master_message(session_name, text):
+    if not session_name or not text:
+        return
+    payload = {"type": "message", "session_name": session_name, "text": text}
+    dead = []
+    for q in list(_MASTER_SUBSCRIBERS):
+        try:
+            q.put_nowait(payload)
+        except queue.Full:
+            pass
+        except Exception:
+            dead.append(q)
+    for q in dead:
+        _MASTER_SUBSCRIBERS.discard(q)
 
 
 def _resolve_provider(session_name, requested_provider):
@@ -2060,6 +2099,34 @@ def chat_named(name):
         default_workdir=default_workdir,
         session_workdir=session_workdir,
         provider_models=provider_models,
+    )
+
+
+@APP.get("/master")
+def master_view():
+    with _SESSION_LOCK:
+        sessions = _load_sessions()
+    config = _load_client_config()
+    default_workdir = (config.get("default_workdir") or "").strip()
+    session_status = _sessions_with_status(sessions)
+    session_list = _build_session_list(sessions)
+    provider_models = _get_provider_model_info()
+    orchestrators = _build_orchestrator_list()
+    master_snapshot = _build_master_snapshot()
+    return render_template(
+        "chat.html",
+        sessions=sessions,
+        session_list=session_list,
+        session_status=session_status,
+        orchestrators=orchestrators,
+        selected_provider=DEFAULT_PROVIDER,
+        default_provider=DEFAULT_PROVIDER,
+        history_messages=[],
+        history_tools=[],
+        default_workdir=default_workdir,
+        provider_models=provider_models,
+        view_mode="master",
+        master_messages=master_snapshot.get("messages") or [],
     )
 
 
@@ -3398,6 +3465,9 @@ def _orchestrator_loop():
                             prompt = action.get("prompt")
                             if target in managed and prompt:
                                 _inject_prompt_to_session(target, prompt)
+                                orch_name = (orch.get("name") or "").strip()
+                                if orch_name:
+                                    _broadcast_master_message(orch_name, prompt)
                         history_entry = {
                             "at": now_iso,
                             "action": action_type,
@@ -3598,6 +3668,23 @@ def stream_sessions():
                 yield f"data: {json.dumps({'type': 'snapshot', **payload})}\n\n"
         finally:
             _SESSION_SUBSCRIBERS.discard(q)
+
+    return Response(generate(), mimetype="text/event-stream")
+
+
+@APP.get("/master/stream")
+def stream_master():
+    def generate():
+        q = queue.Queue(maxsize=100)
+        _MASTER_SUBSCRIBERS.add(q)
+        try:
+            snapshot = _build_master_snapshot()
+            yield f"data: {json.dumps({'type': 'snapshot', **snapshot})}\n\n"
+            while True:
+                payload = q.get()
+                yield f"data: {json.dumps(payload)}\n\n"
+        finally:
+            _MASTER_SUBSCRIBERS.discard(q)
 
     return Response(generate(), mimetype="text/event-stream")
 
