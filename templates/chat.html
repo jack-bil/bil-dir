@@ -267,6 +267,21 @@
         background: transparent;
         padding: 6px 2px;
       }
+      .search-panel {
+        padding: 10px;
+      }
+      #navSearch {
+        width: 100%;
+        border-radius: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(16, 20, 28, 0.8);
+        color: var(--ink);
+        padding: 10px 12px;
+        font-size: 13px;
+      }
+      #navSearch::placeholder {
+        color: rgba(240, 240, 240, 0.45);
+      }
       .sessions-header {
         display: flex;
         align-items: center;
@@ -1527,28 +1542,9 @@
     </div>
     <main>
       <div class="left-col">
-        {% set has_running = false %}
-        {% if session_status %}
-          {% for _name, _status in session_status.items() %}
-            {% if _status == 'running' %}
-              {% set has_running = true %}
-            {% endif %}
-          {% endfor %}
-        {% endif %}
-        <div class="master-card panel">
-          <a class="session-card" href="/master">
-            <div class="meta">
-              <strong>Master Console</strong>
-              <span class="provider-tag">system</span>
-            </div>
-            <div class="session-actions">
-              <span
-                class="status-dot {% if has_running %}running{% endif %}"
-                aria-label="status"
-                title="{% if has_running %}Running{% else %}Idle{% endif %}"
-              ></span>
-            </div>
-          </a>
+        <div class="panel search-panel">
+          <label class="visually-hidden" for="navSearch">Search</label>
+          <input id="navSearch" type="text" placeholder="Search sessions, tasks, orchestrators..." autocomplete="off" />
         </div>
       <section class="panel sessions">
         <div class="section-header">
@@ -1945,6 +1941,7 @@
       const tasksList = document.getElementById("tasksList");
       const orchToggle = document.getElementById("orchToggle");
       const orchBody = document.getElementById("orchBody");
+      const navSearch = document.getElementById("navSearch");
       const orchestratorsList = document.getElementById("orchestratorsList");
       const addOrchBtn = document.getElementById("addOrchBtn");
       const addOrchOverlay = document.getElementById("addOrchOverlay");
@@ -1978,6 +1975,7 @@
       const masterMode = document.body.dataset.master === "true";
       const masterMessages = {{ master_messages|tojson if master_messages is defined else "[]" }};
       const sessionNameList = {{ session_list|map(attribute='name')|list|tojson if session_list is defined else "[]" }};
+      const orchestratorList = {{ orchestrators|tojson if orchestrators is defined else "[]" }};
       console.log("Loaded history - messages:", initialMessages?.length || 0, "tools:", initialToolOutputs?.length || 0);
       const sessionStatus = {{ session_status|tojson }};
       const selectedProvider = "{{ selected_provider or default_provider }}";
@@ -2797,6 +2795,128 @@
         return { name, message };
       }
 
+      function getOrchestratorByName(name) {
+        if (!name || !Array.isArray(orchestratorList)) return null;
+        const target = name.toLowerCase();
+        return orchestratorList.find((orch) => (orch.name || "").toLowerCase() === target) || null;
+      }
+
+      function parseOrchestratorCommand(message) {
+        const raw = (message || "").trim();
+        if (!raw) return null;
+        const lower = raw.toLowerCase();
+        if (["pause", "stop", "disable"].includes(lower)) {
+          return { action: "pause" };
+        }
+        if (["start", "run", "enable"].includes(lower)) {
+          return { action: "start" };
+        }
+        if (["status", "info"].includes(lower)) {
+          return { action: "status" };
+        }
+        if (lower.startsWith("goal")) {
+          const goal = raw.replace(/^goal\s*[: ]/i, "").trim();
+          return goal ? { action: "set_goal", goal } : { action: "help" };
+        }
+        if (lower.startsWith("set goal")) {
+          const goal = raw.replace(/^set\s+goal\s*[: ]/i, "").trim();
+          return goal ? { action: "set_goal", goal } : { action: "help" };
+        }
+        if (lower.startsWith("sessions")) {
+          const list = raw.replace(/^sessions\s*[: ]/i, "").trim();
+          return list ? { action: "set_sessions", sessions: list } : { action: "help" };
+        }
+        if (lower.startsWith("set sessions")) {
+          const list = raw.replace(/^set\s+sessions\s*[: ]/i, "").trim();
+          return list ? { action: "set_sessions", sessions: list } : { action: "help" };
+        }
+        if (lower === "help" || lower === "?") {
+          return { action: "help" };
+        }
+        return { action: "unknown" };
+      }
+
+      function formatOrchHelp() {
+        return [
+          "Commands:",
+          "- start | pause | status",
+          "- goal: <text>  (or: set goal: <text>)",
+          "- sessions: a, b, c  (or: set sessions: a, b, c)",
+        ].join("\n");
+      }
+
+      function parseSessionList(text) {
+        if (!text) return [];
+        if (text.includes(",")) {
+          return text.split(",").map((s) => s.trim()).filter(Boolean);
+        }
+        return text.split(/\s+/).map((s) => s.trim()).filter(Boolean);
+      }
+
+      async function handleOrchestratorCommand(orch, command) {
+        if (!orch || !command) return;
+        const orchName = orch.name || "orchestrator";
+        if (command.action === "help" || command.action === "unknown") {
+          addMasterMessage(orchName, formatOrchHelp());
+          return;
+        }
+        if (command.action === "status") {
+          const status = orch.enabled ? "Enabled" : "Paused";
+          const lastAction = orch.last_action || "n/a";
+          const lastDecision = orch.last_decision_at || "n/a";
+          addMasterMessage(orchName, `Status: ${status}\nLast action: ${lastAction}\nLast decision: ${lastDecision}`);
+          return;
+        }
+        if (command.action === "start") {
+          const resp = await fetch(`/orchestrators/${orch.id}/start`, { method: "POST" });
+          if (!resp.ok) {
+            addMasterMessage(orchName, "Failed to start orchestrator.");
+            return;
+          }
+          orch.enabled = true;
+          addMasterMessage(orchName, "Started.");
+          return;
+        }
+        if (command.action === "pause") {
+          const resp = await fetch(`/orchestrators/${orch.id}/pause`, { method: "POST" });
+          if (!resp.ok) {
+            addMasterMessage(orchName, "Failed to pause orchestrator.");
+            return;
+          }
+          orch.enabled = false;
+          addMasterMessage(orchName, "Paused.");
+          return;
+        }
+        if (command.action === "set_goal") {
+          const resp = await fetch(`/orchestrators/${orch.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ goal: command.goal }),
+          });
+          if (!resp.ok) {
+            addMasterMessage(orchName, "Failed to update goal.");
+            return;
+          }
+          orch.goal = command.goal;
+          addMasterMessage(orchName, "Goal updated.");
+          return;
+        }
+        if (command.action === "set_sessions") {
+          const sessions = parseSessionList(command.sessions);
+          const resp = await fetch(`/orchestrators/${orch.id}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ managed_sessions: sessions }),
+          });
+          if (!resp.ok) {
+            addMasterMessage(orchName, "Failed to update sessions.");
+            return;
+          }
+          orch.managed_sessions = sessions;
+          addMasterMessage(orchName, `Managed sessions updated: ${sessions.join(", ") || "none"}`);
+        }
+      }
+
       function getMasterPrefixRange(value) {
         if (!value.startsWith("@@")) return null;
         const colonIdx = value.indexOf(":");
@@ -2807,11 +2927,27 @@
 
       function getSessionNameList() {
         if (Array.isArray(sessionNameList) && sessionNameList.length) {
-          return sessionNameList.slice();
+          const names = sessionNameList.slice();
+          if (Array.isArray(orchestratorList)) {
+            orchestratorList.forEach((orch) => {
+              if (orch && orch.name && !names.includes(orch.name)) {
+                names.push(orch.name);
+              }
+            });
+          }
+          return names;
         }
-        return Array.from(document.querySelectorAll(".sessions-list li[data-session-name]"))
+        const names = Array.from(document.querySelectorAll(".sessions-list li[data-session-name]"))
           .map((el) => el.getAttribute("data-session-name") || "")
           .filter(Boolean);
+        if (Array.isArray(orchestratorList)) {
+          orchestratorList.forEach((orch) => {
+            if (orch && orch.name && !names.includes(orch.name)) {
+              names.push(orch.name);
+            }
+          });
+        }
+        return names;
       }
 
       function autocompleteSessionName(value) {
@@ -2872,6 +3008,16 @@
             const parsed = parseMasterInput(prompt);
             if (!parsed) {
               alert("Use @@session-name: message (or @@session message).");
+              return;
+            }
+            const orch = getOrchestratorByName(parsed.name);
+            const orchCommand = orch ? parseOrchestratorCommand(parsed.message) : null;
+            const shouldRouteToOrch = orch && orchCommand;
+            if (shouldRouteToOrch) {
+              addMessage(`@@${parsed.name}: ${parsed.message}`, "user");
+              promptInput.value = "";
+              renderPromptMirror();
+              await handleOrchestratorCommand(orch, orchCommand);
               return;
             }
             addMessage(`@@${parsed.name}: ${parsed.message}`, "user");
@@ -3571,6 +3717,7 @@
           .join("");
         wireTaskButtons();
         wireTaskMenus();
+        applyNavFilter();
         if (sessionsPanel) {
           sessionsPanel.scrollTop = prevScroll;
         }
@@ -3627,6 +3774,7 @@
             `;
           })
           .join("");
+        applyNavFilter();
         if (sessionsPanel) {
           sessionsPanel.scrollTop = prevScroll;
         }
@@ -4172,6 +4320,44 @@
         updateMasterCardStatus();
       }
 
+      function filterListByQuery(listEl, query) {
+        if (!listEl) return;
+        const q = (query || "").toLowerCase();
+        let anyVisible = false;
+        Array.from(listEl.querySelectorAll("li")).forEach((li) => {
+          if (li.classList.contains("search-empty")) {
+            li.remove();
+            return;
+          }
+          if (li.classList.contains("muted")) {
+            li.style.display = q ? "none" : "";
+            return;
+          }
+          const text = (li.textContent || "").toLowerCase();
+          const match = !q || text.includes(q);
+          li.style.display = match ? "" : "none";
+          if (match) anyVisible = true;
+        });
+        if (q && !anyVisible) {
+          const empty = document.createElement("li");
+          empty.className = "muted search-empty";
+          empty.textContent = "No matches.";
+          listEl.appendChild(empty);
+        }
+      }
+
+      function applyNavFilter() {
+        if (!navSearch) return;
+        const q = navSearch.value || "";
+        filterListByQuery(document.querySelector(".sessions-list"), q);
+        filterListByQuery(document.getElementById("tasksList"), q);
+        filterListByQuery(document.getElementById("orchestratorsList"), q);
+      }
+
+      if (navSearch) {
+        navSearch.addEventListener("input", applyNavFilter);
+      }
+
       function renderSessions(sessions, statusMap) {
         if (!sessionsList) return;
         const sessionsPanel = document.querySelector(".sessions");
@@ -4226,6 +4412,7 @@
         wireRenameButtons();
         wireShowIdsButtons();
         wireMenus();
+        applyNavFilter();
         if (sessionsPanel) {
           sessionsPanel.scrollTop = prevScroll;
         }
