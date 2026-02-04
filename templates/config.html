@@ -30,11 +30,16 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
+        position: sticky;
+        top: 0;
+        z-index: 5;
       }
       main {
         max-width: none;
         margin: 0;
         padding: 0 16px 16px;
+        position: relative;
+        z-index: 1;
       }
       .panel {
         background: var(--panel);
@@ -52,7 +57,7 @@
       }
       .tab-btn {
         padding: 8px 14px;
-        border-radius: 10px 10px 0 0;
+        border-radius: 6px 6px 0 0;
         border: 1px solid var(--border);
         border-bottom: none;
         background: #0b0f16;
@@ -62,8 +67,8 @@
       }
       .tab-btn.active {
         color: var(--ink);
-        background: #121826;
-        border-color: #2a3650;
+        background: #121827;
+        border-color: rgba(147, 197, 253, 0.5);
       }
       .tab-panel { display: none; }
       .tab-panel.active { display: block; }
@@ -120,15 +125,15 @@
         margin: 0 0 12px;
         padding: 10px 12px;
         border-radius: 10px;
-        border: 1px solid #1f3a2a;
-        background: rgba(34, 197, 94, 0.12);
-        color: #86efac;
+        border: 1px solid rgba(147, 197, 253, 0.35);
+        background: rgba(147, 197, 253, 0.12);
+        color: #dbeafe;
       }
       .error {
         margin: 0 0 12px;
         padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid #3a1f1f;
+        border-radius: 6px;
+        border: 1px solid rgba(239, 68, 68, 0.35);
         background: rgba(239, 68, 68, 0.12);
         color: #fecaca;
       }
@@ -142,7 +147,7 @@
         border: 1px solid var(--border);
         background: #0b0f16;
         color: var(--ink);
-        border-radius: 12px;
+        border-radius: 10px;
         padding: 10px 12px;
         text-align: left;
         cursor: pointer;
@@ -152,8 +157,8 @@
         min-height: 64px;
       }
       .chip:hover {
-        border-color: #2a3650;
-        background: #0d121b;
+        border-color: rgba(147, 197, 253, 0.5);
+        background: #121827;
       }
       .chip strong { font-size: 13px; }
       .chip span { color: var(--muted); font-size: 12px; }
@@ -189,8 +194,8 @@
         box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
       }
       .status-pill.ok .status-dot {
-        background: #22c55e;
-        box-shadow: 0 0 8px rgba(34, 197, 94, 0.5);
+        background: var(--accent);
+        box-shadow: 0 0 8px rgba(110, 231, 183, 0.5);
       }
       @media (max-width: 700px) {
         header { padding: 12px 14px; }
@@ -292,7 +297,7 @@
                 <option value="allow-all-urls" {% if config.get('copilot_permissions') == 'allow-all-urls' %}selected{% endif %}>Allow All URLs</option>
                 <option value="allow-all" {% if config.get('copilot_permissions') == 'allow-all' %}selected{% endif %}>YOLO (--allow-all)</option>
               </select>
-              <div class="muted">Controls what Copilot can do without prompting.</div>
+              <div class="muted">Controls what Copilot can do without prompting. Default is allow-all-paths.</div>
             </div>
             <label for="full_permissions_gemini">Gemini full permissions</label>
             <div class="row">
@@ -400,6 +405,29 @@
           label: "Kubernetes",
           desc: "Cluster access",
           spec: { command: "npx", args: ["-y", "kubernetes-mcp-server@latest"] },
+        },
+        {
+          key: "brave-search",
+          label: "Brave Search",
+          desc: "Web search via Brave",
+          spec: {
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-brave-search"],
+            env: { BRAVE_API_KEY: "REPLACE_ME" },
+          },
+        },
+        {
+          key: "gmail",
+          label: "Gmail",
+          desc: "Google Gmail MCP",
+          spec: {
+            command: "npx",
+            args: ["-y", "@modelcontextprotocol/server-gmail"],
+            env: {
+              GOOGLE_CLIENT_ID: "REPLACE_ME",
+              GOOGLE_CLIENT_SECRET: "REPLACE_ME",
+            },
+          },
         },
         {
           key: "plex",

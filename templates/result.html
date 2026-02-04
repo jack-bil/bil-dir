@@ -4,67 +4,92 @@
     <meta charset="utf-8" />
     <title>Codex Result</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap">
     <style>
       :root {
-        --bg: #0f1116;
-        --panel: #161a22;
-        --ink: #e6edf3;
-        --muted: #9aa7b2;
-        --accent: #6ee7b7;
-        --border: #232a36;
+        --bg: #070a07;
+        --panel: #0b100b;
+        --ink: #d2f8d2;
+        --muted: #89a189;
+        --accent: #5ab4ff;
+        --border: #1b2a1b;
         --danger: #f87171;
-        --user: #1d2533;
-        --assistant: #121827;
+        --user: #0f1a12;
+        --assistant: #0b1310;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
-        font-family: "IBM Plex Sans", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+        font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
         color: var(--ink);
-        background: var(--bg);
+        background: radial-gradient(900px 500px at 15% -10%, rgba(90, 180, 255, 0.08), transparent),
+                    radial-gradient(900px 500px at 95% 10%, rgba(122, 209, 255, 0.06), transparent),
+                    linear-gradient(180deg, #050806, #090d09 40%, #050805);
         min-height: 100vh;
         padding: 24px;
+        letter-spacing: 0.2px;
+      }
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+        background: repeating-linear-gradient(
+          to bottom,
+          rgba(10, 20, 10, 0.22) 0px,
+          rgba(10, 20, 10, 0.22) 1px,
+          rgba(0, 0, 0, 0) 2px,
+          rgba(0, 0, 0, 0) 4px
+        );
+        mix-blend-mode: soft-light;
+        opacity: 0.35;
+        z-index: 0;
       }
       a { color: var(--accent); text-decoration: none; }
       .panel {
         background: var(--panel);
         border: 1px solid var(--border);
-        border-radius: 14px;
+        border-radius: 8px;
         padding: 18px;
         max-width: 980px;
         margin: 0 auto 16px;
+        position: relative;
+        z-index: 1;
+        box-shadow: inset 0 0 0 1px rgba(90, 180, 255, 0.05),
+                    0 10px 24px rgba(0, 0, 0, 0.35);
       }
       .muted { color: var(--muted); }
       pre {
         white-space: pre-wrap;
         word-break: break-word;
-        background: #0b0f16;
+        background: #050806;
         padding: 12px;
-        border-radius: 10px;
+        border-radius: 6px;
         border: 1px solid var(--border);
       }
       .error { color: var(--danger); font-weight: 600; }
       .messages {
-        background: #0b0f16;
+        background: #050806;
         border: 1px solid var(--border);
-        border-radius: 12px;
+        border-radius: 6px;
         padding: 10px;
       }
       .msg {
         padding: 10px 12px;
-        border-radius: 12px;
+        border-radius: 6px;
         margin: 8px 0;
         max-width: 80%;
         white-space: pre-wrap;
         word-break: break-word;
+        border: 1px solid rgba(90, 180, 255, 0.08);
       }
-      .msg.user { background: var(--user); margin-left: auto; }
-      .msg.assistant { background: var(--assistant); }
+      .msg.user { background: var(--user); margin-left: auto; border-left: 3px solid var(--accent); }
+      .msg.assistant { background: var(--assistant); border-left: 3px solid #7ad1ff; }
       details.tools {
         margin-top: 12px;
-        background: #0b0f16;
+        background: #050806;
         border: 1px solid var(--border);
-        border-radius: 10px;
+        border-radius: 6px;
         padding: 8px 10px;
       }
       details.tools summary {

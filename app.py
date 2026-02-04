@@ -301,6 +301,8 @@ def _normalize_session_record(value):
     if isinstance(value, dict):
         session_id = value.get("session_id")
         session_ids = value.get("session_ids")
+        last_used = value.get("last_used")
+        created_at = value.get("created_at")
         provider = (value.get("provider") or DEFAULT_PROVIDER).lower()
         if provider not in SUPPORTED_PROVIDERS:
             provider = DEFAULT_PROVIDER
@@ -308,15 +310,33 @@ def _normalize_session_record(value):
             session_ids = {}
         if session_id and provider and not session_ids.get(provider):
             session_ids[provider] = session_id
-        record = {"session_id": session_id, "session_ids": session_ids, "provider": provider}
+        record = {
+            "session_id": session_id,
+            "session_ids": session_ids,
+            "provider": provider,
+            "last_used": last_used,
+            "created_at": created_at,
+        }
         # Preserve workdir if set
         workdir = (value.get("workdir") or "").strip()
         if workdir:
             record["workdir"] = workdir
         return record
     if isinstance(value, str):
-        return {"session_id": value, "session_ids": {}, "provider": DEFAULT_PROVIDER}
-    return {"session_id": None, "session_ids": {}, "provider": DEFAULT_PROVIDER}
+        return {
+            "session_id": value,
+            "session_ids": {},
+            "provider": DEFAULT_PROVIDER,
+            "last_used": None,
+            "created_at": None,
+        }
+    return {
+        "session_id": None,
+        "session_ids": {},
+        "provider": DEFAULT_PROVIDER,
+        "last_used": None,
+        "created_at": None,
+    }
 
 
 def _normalize_sessions(data):
@@ -338,24 +358,34 @@ def _normalize_task(value):
     if provider not in SUPPORTED_PROVIDERS:
         provider = DEFAULT_PROVIDER
     schedule = value.get("schedule") if isinstance(value.get("schedule"), dict) else {"type": "manual"}
+    workdir = (value.get("workdir") or "").strip()
     enabled = bool(value.get("enabled", True))
     last_run = value.get("last_run")
     next_run = value.get("next_run")
     last_status = value.get("last_status")
     last_output = value.get("last_output")
+    last_output_raw = value.get("last_output_raw")
     last_error = value.get("last_error")
+    run_history = value.get("run_history")
+    last_runtime_sec = value.get("last_runtime_sec")
+    if not isinstance(run_history, list):
+        run_history = []
     return {
         "id": task_id,
         "name": name,
         "prompt": prompt,
         "provider": provider,
         "schedule": schedule,
+        "workdir": workdir,
         "enabled": enabled,
         "last_run": last_run,
         "next_run": next_run,
         "last_status": last_status,
         "last_output": last_output,
+        "last_output_raw": last_output_raw,
         "last_error": last_error,
+        "last_runtime_sec": last_runtime_sec,
+        "run_history": run_history,
     }
 
 
@@ -386,6 +416,58 @@ def _save_tasks(tasks):
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {task_id: task for task_id, task in (tasks or {}).items()}
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _ensure_task_history(task):
+    if not task or task.get("run_history"):
+        return task
+    has_any = task.get("last_output") or task.get("last_output_raw") or task.get("last_error")
+    if not has_any:
+        return task
+    run = {
+        "finished_at": task.get("last_run"),
+        "started_at": task.get("last_run"),
+        "runtime_sec": task.get("last_runtime_sec"),
+        "status": task.get("last_status") or "ok",
+        "output": task.get("last_output") or "",
+        "raw_output": task.get("last_output_raw") or "",
+        "error": task.get("last_error"),
+    }
+    task["run_history"] = [run]
+    return task
+
+
+def _format_task_run_header(run):
+    finished_at = run.get("finished_at") or run.get("run_at") or ""
+    status = run.get("status") or ""
+    runtime = run.get("runtime_sec")
+    if isinstance(runtime, (int, float)):
+        runtime_text = f"{runtime:.2f}s"
+    else:
+        runtime_text = "n/a"
+    parts = []
+    if finished_at:
+        parts.append(f"[{finished_at}]")
+    parts.append(f"runtime={runtime_text}")
+    if status:
+        parts.append(f"status={status}")
+    return " ".join(parts).strip()
+
+
+def _build_task_history_text(run_history, field):
+    if not run_history:
+        return ""
+    chunks = []
+    for run in run_history:
+        header = _format_task_run_header(run)
+        body = run.get(field) or ""
+        if not body and run.get("error"):
+            body = str(run.get("error"))
+        if header:
+            chunks.append(f"{header}\n{body}".rstrip())
+        else:
+            chunks.append(str(body).rstrip())
+    return "\n\n".join(chunks).strip()
 
 
 def _schedule_summary(task):
@@ -468,7 +550,14 @@ def _broadcast_tasks_snapshot():
 def _build_tasks_snapshot():
     with _TASK_LOCK:
         tasks = _load_tasks()
-    ordered = sorted(tasks.values(), key=lambda t: t.get("name", ""))
+    def _task_sort_key(task):
+        last_run = task.get("last_run")
+        try:
+            ts = datetime.datetime.fromisoformat(last_run).timestamp() if last_run else 0
+        except (TypeError, ValueError):
+            ts = 0
+        return (-ts, (task.get("name") or "").lower())
+    ordered = sorted(tasks.values(), key=_task_sort_key)
     for task in ordered:
         task["schedule_summary"] = _schedule_summary(task)
     return {"count": len(ordered), "tasks": ordered}
@@ -525,12 +614,16 @@ def _save_sessions(data):
 def _load_client_config():
     path = pathlib.Path(CLIENT_CONFIG_PATH)
     if not path.exists():
-        return {}
+        return {"copilot_permissions": "allow-all-paths"}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
+        if not isinstance(data, dict):
+            return {"copilot_permissions": "allow-all-paths"}
+        if not data.get("copilot_permissions"):
+            data["copilot_permissions"] = "allow-all-paths"
+        return data
     except (OSError, json.JSONDecodeError):
-        return {}
+        return {"copilot_permissions": "allow-all-paths"}
 
 
 def _save_client_config(data):
@@ -829,6 +922,7 @@ def _set_session_name(name, session_id, provider=None):
         data = _load_sessions()
         record = data.get(name) or {"session_id": None, "session_ids": {}, "provider": DEFAULT_PROVIDER}
         record["session_id"] = session_id
+        record["last_used"] = datetime.datetime.now().isoformat(timespec="seconds")
         if provider is None:
             provider = (record.get("provider") or DEFAULT_PROVIDER).lower()
         if provider not in SUPPORTED_PROVIDERS:
@@ -872,7 +966,10 @@ def _ensure_session_id(name, provider):
         if not isinstance(session_ids, dict):
             session_ids = {}
         if not session_ids.get(provider):
-            session_ids[provider] = f"{provider}-{uuid.uuid4().hex}"
+            if provider == "claude":
+                session_ids[provider] = str(uuid.uuid4())
+            else:
+                session_ids[provider] = f"{provider}-{uuid.uuid4().hex}"
         record["session_ids"] = session_ids
         record["session_id"] = session_ids.get(provider)
         data[name] = record
@@ -930,8 +1027,11 @@ def _build_session_list(sessions):
                 "name": name,
                 "session_id": record.get("session_id"),
                 "provider": record.get("provider") or DEFAULT_PROVIDER,
+                "last_used": record.get("last_used"),
+                "created_at": record.get("created_at"),
             }
         )
+    items.sort(key=lambda item: item.get("created_at") or item.get("last_used") or "", reverse=True)
     return items
 
 
@@ -940,6 +1040,21 @@ def _build_sessions_snapshot():
         sessions = _load_sessions()
         status = _sessions_with_status(sessions)
     return {"sessions": sessions, "status": status}
+
+
+def _touch_session(name, when=None):
+    if not name:
+        return
+    now = when or datetime.datetime.now().isoformat(timespec="seconds")
+    with _SESSION_LOCK:
+        data = _load_sessions()
+        record = data.get(name) or {"session_id": None, "session_ids": {}, "provider": DEFAULT_PROVIDER}
+        record["last_used"] = now
+        if not record.get("created_at"):
+            record["created_at"] = now
+        data[name] = record
+        _save_sessions(data)
+    _broadcast_sessions_snapshot()
 
 
 def _broadcast_sessions_snapshot():
@@ -1057,6 +1172,35 @@ def _build_synthetic_events(text):
         return []
     return [{"type": "item.completed", "item": {"type": "agent_message", "text": text}}]
 
+def _is_copilot_footer_line(line):
+    if not line:
+        return False
+    stripped = line.strip()
+    return (
+        stripped.startswith("Total usage est:")
+        or stripped.startswith("API time spent:")
+        or stripped.startswith("Total session time:")
+        or stripped.startswith("Total code changes:")
+        or stripped.startswith("Breakdown by AI model:")
+    )
+
+
+def _strip_copilot_footer(text):
+    if not text:
+        return text
+    lines = text.splitlines()
+    start_idx = None
+    for i, line in enumerate(lines):
+        if line.strip().startswith("Total usage est:"):
+            start_idx = i
+            break
+    if start_idx is None:
+        return text
+    tail = lines[start_idx:]
+    if any(_is_copilot_footer_line(line) for line in tail):
+        lines = lines[:start_idx]
+    return "\n".join(lines).rstrip()
+
 
 def _run_copilot_exec(prompt, cwd, config, extra_args=None, timeout_sec=300, resume_session_id=None, resume_last=False, context_briefing=None):
     logger.debug(f"[Context] _run_copilot_exec called with context={context_briefing is not None}, resume={resume_session_id}, last={resume_last}")
@@ -1093,6 +1237,8 @@ Previous conversation history from other providers:
     copilot_permissions = (config.get("copilot_permissions") or "").strip()
     if copilot_permissions:
         args.append(f"--{copilot_permissions}")
+    else:
+        args.append("--allow-all-paths")
     
     # Add model flag if configured
     copilot_model = (config.get("copilot_model") or "").strip()
@@ -1144,12 +1290,13 @@ Previous conversation history from other providers:
     gemini_path = _resolve_gemini_path(config)
     if not gemini_path:
         raise FileNotFoundError("gemini CLI not found")
+
+    _ensure_gemini_policy()
     
     args = [gemini_path]
     
-    # Add resume flag if resuming a session (must come before -p)
-    # Gemini manages its own session IDs, so we always use 'latest' to continue
-    if resume_session_id or resume_last:
+    # Add resume flag only when explicitly resuming last (Gemini manages its own session IDs)
+    if resume_last:
         args.extend(["--resume", "latest"])
     
     # Add prompt flag last
@@ -1168,7 +1315,180 @@ Previous conversation history from other providers:
     return (proc.stdout or "").strip()
 
 
-def _run_claude_exec(prompt, config, timeout_sec=300, cwd=None, resume_session_id=None, resume_last=False, context_briefing=None):
+def _ensure_gemini_policy():
+    """Ensure Gemini CLI policy allows delegate_to_agent in non-interactive mode."""
+    try:
+        policy_dir = pathlib.Path.home() / ".gemini" / "policies"
+        policy_dir.mkdir(parents=True, exist_ok=True)
+        policy_path = policy_dir / "bil-dir.toml"
+        if policy_path.exists():
+            return
+        policy_path.write_text(
+            """[[rule]]
+toolName = "delegate_to_agent"
+decision = "allow"
+priority = 100
+""",
+            encoding="utf-8",
+        )
+    except Exception:
+        # Best effort: do not block Gemini if policy can't be written
+        return
+
+
+def _get_latest_claude_session_id(cwd=None):
+    """Get the most recent Claude session ID for a working directory.
+
+    Args:
+        cwd: Working directory path (optional)
+
+    Returns:
+        str: Session UUID or None if not found
+    """
+    import tempfile
+    import os
+    import re
+    import pathlib
+
+    def normalize_for_match(s):
+        """Normalize a path component for fuzzy matching.
+        Claude normalizes paths by replacing spaces and underscores with hyphens.
+        """
+        return s.lower().replace(" ", "-").replace("_", "-")
+
+    # Get Claude's temp directory
+    temp_dir = tempfile.gettempdir()
+    claude_temp = os.path.join(temp_dir, "claude")
+
+    claude_temp_exists = os.path.exists(claude_temp)
+
+    uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    sessions = []
+
+    if cwd and claude_temp_exists:
+        cwd_encoded = normalize_for_match(cwd.replace(":", "-").replace("\\", "-").replace("/", "-"))
+        search_dir = os.path.join(claude_temp, cwd_encoded)
+
+        # Try exact match first
+        if os.path.exists(search_dir) and os.path.isdir(search_dir):
+            items = os.listdir(search_dir)
+            for dirname in items:
+                path = os.path.join(search_dir, dirname)
+                if os.path.isdir(path) and uuid_pattern.match(dirname):
+                    mtime = os.path.getmtime(path)
+                    sessions.append((dirname, mtime))
+        else:
+            # If exact match fails, look for similar paths
+            # Claude normalizes paths by replacing spaces and underscores with hyphens
+            # Normalize the search term and compare
+            dir_basename_normalized = normalize_for_match(os.path.basename(cwd))
+            for workdir_name in os.listdir(claude_temp):
+                workdir_normalized = normalize_for_match(workdir_name)
+                if dir_basename_normalized in workdir_normalized:
+                    workdir_path = os.path.join(claude_temp, workdir_name)
+                    if not os.path.isdir(workdir_path):
+                        continue
+
+                    for dirname in os.listdir(workdir_path):
+                        path = os.path.join(workdir_path, dirname)
+                        if os.path.isdir(path) and uuid_pattern.match(dirname):
+                            mtime = os.path.getmtime(path)
+                            sessions.append((dirname, mtime))
+    elif claude_temp_exists:
+        # Search all subdirectories
+        for workdir_name in os.listdir(claude_temp):
+            workdir_path = os.path.join(claude_temp, workdir_name)
+            if not os.path.isdir(workdir_path):
+                continue
+
+            for dirname in os.listdir(workdir_path):
+                path = os.path.join(workdir_path, dirname)
+                if os.path.isdir(path) and uuid_pattern.match(dirname):
+                    mtime = os.path.getmtime(path)
+                    sessions.append((dirname, mtime))
+
+    if not sessions:
+        # Fallback to Claude projects directory (~/.claude/projects)
+        project_roots = []
+        home_path = pathlib.Path.home()
+        project_roots.append(home_path / ".claude" / "projects")
+        user_profile = os.environ.get("USERPROFILE")
+        if user_profile:
+            project_roots.append(pathlib.Path(user_profile) / ".claude" / "projects")
+        home_env = os.environ.get("HOME")
+        if home_env:
+            project_roots.append(pathlib.Path(home_env) / ".claude" / "projects")
+
+        for projects_root in project_roots:
+            if not projects_root.exists():
+                continue
+
+            def collect_from_project_dir(project_dir):
+                for entry in project_dir.iterdir():
+                    if entry.is_file() and entry.suffix == ".jsonl":
+                        name = entry.stem
+                        if uuid_pattern.match(name):
+                            sessions.append((name, entry.stat().st_mtime))
+
+            if cwd:
+                project_encoded = normalize_for_match(cwd.replace(":", "-").replace("\\", "-").replace("/", "-"))
+                exact_project_dir = projects_root / project_encoded
+                if exact_project_dir.exists() and exact_project_dir.is_dir():
+                    collect_from_project_dir(exact_project_dir)
+                else:
+                    dir_basename_normalized = normalize_for_match(os.path.basename(cwd))
+                    for project_dir in projects_root.iterdir():
+                        if project_dir.is_dir():
+                            project_name_normalized = normalize_for_match(project_dir.name)
+                            if dir_basename_normalized in project_name_normalized:
+                                collect_from_project_dir(project_dir)
+            else:
+                for project_dir in projects_root.iterdir():
+                    if project_dir.is_dir():
+                        collect_from_project_dir(project_dir)
+            if sessions:
+                break
+
+    if not sessions and cwd and claude_temp_exists:
+        # Fallback to searching all temp subdirectories if cwd-specific search fails
+        for workdir_name in os.listdir(claude_temp):
+            workdir_path = os.path.join(claude_temp, workdir_name)
+            if not os.path.isdir(workdir_path):
+                continue
+
+            for dirname in os.listdir(workdir_path):
+                path = os.path.join(workdir_path, dirname)
+                if os.path.isdir(path) and uuid_pattern.match(dirname):
+                    mtime = os.path.getmtime(path)
+                    sessions.append((dirname, mtime))
+
+    if not sessions:
+        return None
+
+    sessions.sort(key=lambda x: x[1], reverse=True)
+    return sessions[0][0]
+
+
+def _wait_for_claude_session_id(cwd, timeout_sec=2.0, interval_sec=0.1):
+    deadline = time.monotonic() + timeout_sec
+    last_seen = None
+    while time.monotonic() < deadline:
+        last_seen = _get_latest_claude_session_id(cwd)
+        if last_seen:
+            return last_seen
+        time.sleep(interval_sec)
+    return last_seen
+
+
+def _is_uuid(value):
+    if not value or not isinstance(value, str):
+        return False
+    import re
+    uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+    return bool(uuid_pattern.match(value))
+
+
+def _run_claude_exec(prompt, config, timeout_sec=300, cwd=None, resume_session_id=None, resume_last=False, context_briefing=None, session_id=None):
     # Inject context briefing if provided and not resuming
     if context_briefing and not resume_session_id and not resume_last:
         logger.info(f"[Context] Injecting {len(context_briefing)} chars of context into claude prompt")
@@ -1189,10 +1509,13 @@ Previous conversation history from other providers:
         raise FileNotFoundError("claude CLI not found")
     
     args = [claude_path]
+    args.append("--dangerously-skip-permissions")
     
-    # Add resume flag if resuming a session (must come before -p)
-    if resume_session_id:
+    # Add resume or new session flags (must come before -p)
+    if _is_uuid(resume_session_id):
         args.extend(["--resume", resume_session_id])
+    elif _is_uuid(session_id):
+        args.extend(["--session-id", session_id])
     elif resume_last:
         args.append("--continue")
     
@@ -1209,7 +1532,74 @@ Previous conversation history from other providers:
     )
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or proc.stdout or "claude CLI failed").strip())
-    return (proc.stdout or "").strip()
+
+    # Clean the output to remove tool execution markers for better formatting
+    output = (proc.stdout or "").strip()
+    return _clean_claude_output(output)
+
+
+def _clean_claude_output(text):
+    """Clean Claude Code output by removing tool execution markers.
+
+    Claude Code CLI includes tool execution steps like:
+    * List directory .
+    * 699 files found
+
+    This function removes these markers while preserving the actual response content.
+
+    Args:
+        text: Raw Claude CLI output
+
+    Returns:
+        str: Cleaned text with tool markers removed
+    """
+    import re
+
+    lines = text.split("\n")
+    cleaned_lines = []
+
+    for line in lines:
+        # Skip tool execution markers (lines starting with unicode bullet or box-drawing)
+        line_stripped = line.strip()
+        if line_stripped.startswith("\u25cf") or line_stripped.startswith("\u2514"):
+            continue
+
+        # Skip empty lines that follow tool markers
+        if not line_stripped and cleaned_lines and not cleaned_lines[-1].strip():
+            continue
+
+        cleaned_lines.append(line)
+
+    # Join and clean up excessive whitespace
+    result = "\n".join(cleaned_lines)
+
+    # Remove excessive blank lines (more than 2 consecutive)
+    result = re.sub(r"\n{3,}", "\n\n", result)
+
+    return result.strip()
+
+
+def _extract_codex_assistant_output(raw_text):
+    if not raw_text:
+        return raw_text
+    assistant_text = []
+    for line in raw_text.split("\n"):
+        if line.startswith('{"type":'):
+            try:
+                event = json.loads(line)
+                if event.get("type") == "item.completed":
+                    item = event.get("item", {})
+                    if item.get("type") == "agent_message" and item.get("text"):
+                        assistant_text.append(item.get("text", ""))
+                    elif item.get("type") == "message" and item.get("role") == "assistant":
+                        for content in item.get("content", []):
+                            if content.get("type") == "text":
+                                assistant_text.append(content.get("text", ""))
+            except Exception:
+                pass
+    if assistant_text:
+        return "\n".join(assistant_text)
+    return raw_text
 
 
 @APP.get("/health")
@@ -1397,6 +1787,7 @@ def chat_named(name):
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
     selected_provider = _get_session_provider_for_name(name)
+    _touch_session(name)
     provider_models = _get_provider_model_info()
     # Get session-specific workdir if set
     session_record = sessions.get(name) or {}
@@ -1427,6 +1818,28 @@ def task_view(task_id):
     task = tasks.get(task_id)
     if not task:
         return "Task not found", 404
+
+    updated_task = False
+    if task.get("last_output") and not task.get("last_output_raw"):
+        raw = task.get("last_output")
+        cleaned = _extract_codex_assistant_output(raw)
+        task["last_output_raw"] = raw
+        if cleaned != raw:
+            task["last_output"] = cleaned
+        updated_task = True
+    task = _ensure_task_history(task)
+    if task.get("run_history") and tasks.get(task_id, {}).get("run_history") != task.get("run_history"):
+        updated_task = True
+    if updated_task:
+        with _TASK_LOCK:
+            tasks = _load_tasks()
+            tasks[task["id"]] = task
+            _save_tasks(tasks)
+
+    output_history_text = _build_task_history_text(task.get("run_history"), "output")
+    raw_history_text = _build_task_history_text(task.get("run_history"), "raw_output")
+    task["output_history_text"] = output_history_text or (task.get("last_output") or "")
+    task["raw_output_history_text"] = raw_history_text or (task.get("last_output_raw") or "")
     
     config = _load_client_config()
     default_workdir = (config.get("default_workdir") or "").strip()
@@ -1446,6 +1859,48 @@ def task_view(task_id):
         provider_models=provider_models,
         selected_task=task,
         view_mode="task",
+        is_new_task=False,
+    )
+
+
+@APP.get("/task/new")
+def task_new():
+    with _SESSION_LOCK:
+        sessions = _load_sessions()
+    config = _load_client_config()
+    default_workdir = (config.get("default_workdir") or "").strip()
+    session_status = _sessions_with_status(sessions)
+    session_list = _build_session_list(sessions)
+    provider_models = _get_provider_model_info()
+    empty_task = {
+        "id": "",
+        "name": "",
+        "prompt": "",
+        "provider": DEFAULT_PROVIDER,
+        "schedule": {"type": "manual"},
+        "enabled": True,
+        "workdir": "",
+        "last_output": "",
+        "last_output_raw": "",
+        "last_error": "",
+        "last_runtime_sec": None,
+        "run_history": [],
+        "output_history_text": "",
+        "raw_output_history_text": "",
+    }
+    return render_template(
+        "chat.html",
+        sessions=sessions,
+        session_list=session_list,
+        session_status=session_status,
+        default_provider=DEFAULT_PROVIDER,
+        history_messages=[],
+        history_tools=[],
+        default_workdir=default_workdir,
+        provider_models=provider_models,
+        selected_task=empty_task,
+        view_mode="task",
+        is_new_task=True,
     )
 
 
@@ -1621,18 +2076,20 @@ def exec_codex():
                 resume_last=resume_last,
                 context_briefing=context_briefing,
             )
-            text = (proc.stdout or "").strip()
+            text = _strip_copilot_footer((proc.stdout or "").strip())
             events = _build_synthetic_events(text)
             session_id = resume_session_id or _ensure_session_id(session_name, provider) if session_name else None
             result = {
                 "returncode": proc.returncode,
-                "stdout": proc.stdout,
+                "stdout": text,
                 "stderr": proc.stderr,
                 "cwd": cwd,
                 "cmd": cmd,
             }
         elif provider == "gemini":
             history_messages = _get_history_for_name(session_name).get("messages") if session_name else []
+            if resume_session_id and resume_session_id.startswith("gemini-") and not resume_last:
+                resume_session_id = None
             text = _run_gemini_exec(prompt, history_messages, config=config, timeout_sec=timeout_sec, cwd=cwd, resume_session_id=resume_session_id, resume_last=resume_last, context_briefing=context_briefing)
             gemini_path = _resolve_gemini_path(config) or "gemini"
             events = _build_synthetic_events(text)
@@ -1645,10 +2102,47 @@ def exec_codex():
                 "cmd": [gemini_path, "-p", prompt],
             }
         elif provider == "claude":
-            text = _run_claude_exec(prompt, config=config, timeout_sec=timeout_sec, cwd=cwd, resume_session_id=resume_session_id, resume_last=resume_last, context_briefing=context_briefing)
+            session_id = resume_session_id if _is_uuid(resume_session_id) else None
+            session_id_for_cli = None
+            if session_name and not session_id:
+                session_id = _ensure_session_id(session_name, provider)
+                session_id_for_cli = session_id
+            text = _run_claude_exec(
+                prompt,
+                config=config,
+                timeout_sec=timeout_sec,
+                cwd=cwd,
+                resume_session_id=resume_session_id,
+                resume_last=resume_last,
+                context_briefing=context_briefing,
+                session_id=session_id_for_cli,
+            )
             claude_path = _resolve_claude_path(config) or "claude"
             events = _build_synthetic_events(text)
-            session_id = resume_session_id or _ensure_session_id(session_name, provider) if session_name else None
+
+            # Get actual Claude session ID from temp directory
+            # Only extract if session_id is NOT a valid UUID (i.e., it's a generated ID)
+            if session_name:
+                # Check if resume_session_id is NOT a valid UUID
+                if not _is_uuid(resume_session_id):
+                    # Use cwd if set, otherwise use Flask app's working directory
+                    search_dir = cwd if cwd else os.getcwd()
+                    actual_session_id = _wait_for_claude_session_id(search_dir)
+                    if not actual_session_id:
+                        actual_session_id = _wait_for_claude_session_id(None)
+                    if actual_session_id:
+                        session_id = actual_session_id
+                        # Save it to sessions
+                        _set_session_name(session_name, session_id, provider)
+                        logger.info(f"Captured Claude session ID for {session_name}: {session_id}")
+                    else:
+                        session_id = session_id or _ensure_session_id(session_name, provider)
+                else:
+                    # Already have a valid UUID, use it
+                    session_id = resume_session_id
+            else:
+                session_id = resume_session_id or _ensure_session_id(session_name, provider) if session_name else None
+
             result = {
                 "returncode": 0,
                 "stdout": text,
@@ -1986,6 +2480,8 @@ Previous conversation history from other providers:
         copilot_permissions = (config.get("copilot_permissions") or "").strip()
         if copilot_permissions:
             args.append(f"--{copilot_permissions}")
+        else:
+            args.append("--allow-all-paths")
         
         # Add model flag if configured
         copilot_model = (config.get("copilot_model") or "").strip()
@@ -2039,16 +2535,23 @@ Previous conversation history from other providers:
 
         start = time.monotonic()
         assistant_chunks = []
+        suppress_footer = False
         while True:
             try:
                 label, line = q.get(timeout=0.25)
                 line_text = line.rstrip("\n")
                 if label == "stdout":
                     if line_text:
+                        if line_text.strip().startswith("Total usage est:"):
+                            suppress_footer = True
+                        if suppress_footer or _is_copilot_footer_line(line_text):
+                            continue
                         assistant_chunks.append(line_text)
                         _broadcast_agent_message(job, line_text)
                 else:
                     if line_text:
+                        if suppress_footer or _is_copilot_footer_line(line_text):
+                            continue
                         job.broadcast(f"data: {label}:{line_text}\n\n")
             except queue.Empty:
                 if proc.poll() is not None:
@@ -2238,10 +2741,13 @@ Previous conversation history from other providers:
             job.broadcast(f"event: session_id\ndata: {session_id}\n\n")
         
         args = [claude_path]
+        args.append("--dangerously-skip-permissions")
         
         # Add resume flag if resuming a session (must come before -p)
-        if job.resume_session_id:
+        if _is_uuid(job.resume_session_id):
             args.extend(["--resume", job.resume_session_id])
+        elif _is_uuid(job.session_id):
+            args.extend(["--session-id", job.session_id])
         elif job.resume_last:
             args.append("--continue")
         
@@ -2296,6 +2802,24 @@ Previous conversation history from other providers:
 
         proc.wait()
 
+        # Extract actual Claude session ID from temp directory if session ID is not a valid UUID
+        # (i.e., it's a generated ID that needs to be replaced with the real one)
+        if job.session_name:
+            # Only extract if current session_id is NOT a valid UUID (i.e., it's generated)
+            if not _is_uuid(job.session_id):
+                # Use cwd if set, otherwise use Flask app's working directory
+                search_dir = job.cwd if job.cwd else os.getcwd()
+                actual_session_id = _wait_for_claude_session_id(search_dir)
+                if not actual_session_id:
+                    actual_session_id = _wait_for_claude_session_id(None)
+                if actual_session_id:
+                    job.session_id = actual_session_id
+                    # Save it to sessions
+                    _set_session_name(job.session_name, actual_session_id, job.provider)
+                    logger.info(f"Captured Claude session ID for {job.session_name}: {actual_session_id}")
+                    # Broadcast the actual session ID
+                    job.broadcast(f"event: session_id\ndata: {actual_session_id}\n\n")
+
         job.returncode = 0
         _log_event(
             {
@@ -2330,7 +2854,7 @@ def _run_task_exec(task):
         raise RuntimeError("task prompt is empty")
     provider = (task.get("provider") or DEFAULT_PROVIDER).lower()
     config = _get_provider_config()
-    cwd = _safe_cwd(None)
+    cwd = _safe_cwd((task.get("workdir") or "").strip() or None)
     
     # For tasks, we need to ensure non-interactive execution
     if provider == "codex":
@@ -2349,44 +2873,27 @@ def _run_task_exec(task):
         if proc.returncode != 0:
             raise RuntimeError((proc.stderr or proc.stdout or "codex failed").strip())
         # Parse JSON events to get the output
-        output_text = (proc.stdout or "").strip()
-        try:
-            # Extract assistant messages from JSON events
-            lines = output_text.split('\n')
-            assistant_text = []
-            for line in lines:
-                if line.startswith('{"type":'):
-                    import json
-                    try:
-                        event = json.loads(line)
-                        if event.get('type') == 'item.completed':
-                            item = event.get('item', {})
-                            if item.get('type') == 'message' and item.get('role') == 'assistant':
-                                for content in item.get('content', []):
-                                    if content.get('type') == 'text':
-                                        assistant_text.append(content.get('text', ''))
-                    except:
-                        pass
-            output_text = '\n'.join(assistant_text) if assistant_text else output_text
-        except:
-            pass
-        return {"output": output_text, "cmd": cmd}
+        raw_output = (proc.stdout or "").strip()
+        output_text = _extract_codex_assistant_output(raw_output)
+        return {"output": output_text, "raw_output": raw_output, "cmd": cmd}
     if provider == "copilot":
         proc, cmd = _run_copilot_exec(prompt, cwd, config=config)
         if proc.returncode != 0:
             raise RuntimeError((proc.stderr or proc.stdout or "copilot failed").strip())
-        return {"output": (proc.stdout or "").strip(), "cmd": cmd}
+        raw_output = _strip_copilot_footer((proc.stdout or "").strip())
+        return {"output": raw_output, "raw_output": raw_output, "cmd": cmd}
     if provider == "gemini":
         text = _run_gemini_exec(prompt, [], config=config, cwd=cwd)
-        return {"output": text, "cmd": [_resolve_gemini_path(config) or "gemini", "-p", prompt]}
+        return {"output": text, "raw_output": text, "cmd": [_resolve_gemini_path(config) or "gemini", "-p", prompt]}
     if provider == "claude":
         text = _run_claude_exec(prompt, config=config, cwd=cwd)
-        return {"output": text, "cmd": [_resolve_claude_path(config) or "claude", "-p", prompt]}
+        return {"output": text, "raw_output": text, "cmd": [_resolve_claude_path(config) or "claude", "-p", prompt]}
     raise RuntimeError("unknown provider")
 
 
-def _mark_task_run(task_id, status, output=None, error=None):
+def _mark_task_run(task_id, status, output=None, raw_output=None, error=None, runtime_sec=None, started_at=None):
     now = datetime.datetime.now().isoformat(timespec="seconds")
+    started_at = started_at or now
     with _TASK_LOCK:
         tasks = _load_tasks()
         task = tasks.get(task_id)
@@ -2394,13 +2901,31 @@ def _mark_task_run(task_id, status, output=None, error=None):
             return
         task["last_run"] = now
         task["last_status"] = status
+        task["last_runtime_sec"] = runtime_sec
         if output is not None:
             task["last_output"] = output
+        if raw_output is not None:
+            task["last_output_raw"] = raw_output
         if error is not None:
             task["last_error"] = error
         elif status == "ok":
             # Clear error on successful run
             task["last_error"] = None
+        run_history = task.get("run_history")
+        if not isinstance(run_history, list):
+            run_history = []
+        run_history.append(
+            {
+                "started_at": started_at,
+                "finished_at": now,
+                "runtime_sec": runtime_sec,
+                "status": status,
+                "output": output or "",
+                "raw_output": raw_output or "",
+                "error": error,
+            }
+        )
+        task["run_history"] = run_history
         task["next_run"] = None
         if task.get("enabled"):
             next_dt = _compute_next_run(task)
@@ -2412,6 +2937,8 @@ def _mark_task_run(task_id, status, output=None, error=None):
 
 def _run_task_async(task_id):
     def runner():
+        started_ts = time.time()
+        started_at = datetime.datetime.now().isoformat(timespec="seconds")
         try:
             with _TASK_LOCK:
                 tasks = _load_tasks()
@@ -2424,9 +2951,18 @@ def _run_task_async(task_id):
             if not task:
                 return
             result = _run_task_exec(task)
-            _mark_task_run(task_id, "ok", output=result.get("output") or "")
+            runtime_sec = time.time() - started_ts
+            _mark_task_run(
+                task_id,
+                "ok",
+                output=result.get("output") or "",
+                raw_output=result.get("raw_output"),
+                runtime_sec=runtime_sec,
+                started_at=started_at,
+            )
         except Exception as exc:
-            _mark_task_run(task_id, "error", error=str(exc))
+            runtime_sec = time.time() - started_ts
+            _mark_task_run(task_id, "error", error=str(exc), runtime_sec=runtime_sec, started_at=started_at)
 
     thread = threading.Thread(target=runner, daemon=True)
     thread.start()
@@ -2497,6 +3033,10 @@ def stream_codex():
         if not resume_session_id and session_name:
             resume_session_id = _get_session_id_for_name(session_name)
         provider = _resolve_provider(session_name, requested_provider)
+        if provider == "gemini" and resume_session_id and resume_session_id.startswith("gemini-") and not resume_last:
+            resume_session_id = None
+        if session_name:
+            _touch_session(session_name)
         logger.debug(f"[Context] Stream - After resolve: provider={provider}, requested={requested_provider}")
         
         # Check if we're switching providers and need to generate context
@@ -2655,6 +3195,7 @@ def create_task():
     provider = (body.get("provider") or DEFAULT_PROVIDER).lower()
     schedule = body.get("schedule") if isinstance(body.get("schedule"), dict) else {"type": "manual"}
     enabled = bool(body.get("enabled", True))
+    workdir = (body.get("workdir") or "").strip()
     if not name:
         return jsonify({"error": "name is required"}), 400
     if not prompt:
@@ -2669,6 +3210,7 @@ def create_task():
             "provider": provider,
             "schedule": schedule,
             "enabled": enabled,
+            "workdir": workdir,
         }
     )
     if enabled:
@@ -2708,6 +3250,8 @@ def update_task(task_id):
         if "schedule" in body:
             schedule = body.get("schedule") if isinstance(body.get("schedule"), dict) else {"type": "manual"}
             task["schedule"] = schedule
+        if "workdir" in body:
+            task["workdir"] = (body.get("workdir") or "").strip()
         if "enabled" in body:
             task["enabled"] = bool(body.get("enabled"))
         if task.get("enabled"):
@@ -2790,6 +3334,7 @@ def create_session():
     provider = (body.get("provider") or DEFAULT_PROVIDER).lower()
     if provider not in SUPPORTED_PROVIDERS:
         provider = DEFAULT_PROVIDER
+    session_id_override = (body.get("session_id") or "").strip()
     workdir = (body.get("workdir") or "").strip()
     run_init = body.get("run_init", False)
     
@@ -2797,11 +3342,13 @@ def create_session():
         data = _load_sessions()
         if name in data:
             return jsonify({"error": "session already exists"}), 409
-        session_id = f"{provider}-{uuid.uuid4().hex}"
+        session_id = session_id_override or f"{provider}-{uuid.uuid4().hex}"
         record = {
             "session_id": session_id,
             "session_ids": {provider: session_id},
             "provider": provider,
+            "last_used": datetime.datetime.now().isoformat(timespec="seconds"),
+            "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
         }
         if workdir:
             record["workdir"] = workdir

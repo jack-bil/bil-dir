@@ -1,0 +1,74 @@
+/* Optional terminal theme (not active). Load with a separate <link> if needed. */
+:root {
+  --bg: #070a07;
+  --panel: #0b100b;
+  --ink: #d2f8d2;
+  --muted: #89a189;
+  --accent: #5ab4ff;
+  --accent-2: #7ad1ff;
+  --border: #1b2a1b;
+  --user: #0f1a12;
+  --assistant: #0b1310;
+}
+
+body.terminal-theme {
+  font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  color: var(--ink);
+  background:
+    radial-gradient(900px 500px at 15% -10%, rgba(90, 180, 255, 0.08), transparent),
+    radial-gradient(900px 500px at 95% 10%, rgba(122, 209, 255, 0.06), transparent),
+    linear-gradient(180deg, #050806, #090d09 40%, #050805);
+}
+
+body.terminal-theme header {
+  background: #090d09;
+  border-bottom: 1px solid var(--border);
+  box-shadow: inset 0 -1px 0 rgba(90, 180, 255, 0.08);
+}
+
+body.terminal-theme .panel {
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px rgba(90, 180, 255, 0.05),
+              0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+body.terminal-theme .messages {
+  background: #0b0f16;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  box-shadow: inset 0 0 0 1px rgba(90, 180, 255, 0.04);
+}
+
+body.terminal-theme .msg {
+  border-radius: 6px;
+  border: 1px solid rgba(90, 180, 255, 0.08);
+}
+
+body.terminal-theme .msg.user {
+  border-left: 3px solid var(--accent);
+}
+
+body.terminal-theme .msg.assistant {
+  border-left: 3px solid var(--accent-2);
+}
+
+body.terminal-theme .primary-btn,
+body.terminal-theme button {
+  border-radius: 6px;
+  background: linear-gradient(135deg, rgba(90, 180, 255, 0.2), rgba(90, 180, 255, 0.65));
+  color: #041007;
+  border: 1px solid rgba(90, 180, 255, 0.55);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+body.terminal-theme .status-dot.running {
+  background: #5ab4ff;
+  box-shadow: 0 0 6px rgba(90, 180, 255, 0.7);
+}
+
+@keyframes pulse-terminal {
+  0% { box-shadow: 0 0 0 rgba(90, 180, 255, 0.0); }
+  50% { box-shadow: 0 0 10px rgba(90, 180, 255, 0.85); }
+  100% { box-shadow: 0 0 0 rgba(90, 180, 255, 0.0); }
+}
