@@ -50,6 +50,7 @@ test_*.png
 context_debug.log
 server.log
 error.log
+.env
 
 # Development/debug documents
 PER_DIRECTORY_HISTORY.md

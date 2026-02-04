@@ -42,6 +42,7 @@ LOG_STORE_PATH = os.environ.get("BILDIR_LOG_STORE", os.path.join(DEFAULT_CWD, "l
 MCP_JSON_PATH = os.environ.get("MCP_JSON_PATH", os.path.join(DEFAULT_CWD, "mcp.json"))
 PROVIDER_CONFIG_PATH = os.environ.get("BILDIR_PROVIDER_CONFIG", os.path.join(DEFAULT_CWD, "providers", "config.toml"))
 TASK_STORE_PATH = os.environ.get("BILDIR_TASK_STORE", os.path.join(DEFAULT_CWD, "tasks.json"))
+ORCH_STORE_PATH = os.environ.get("BILDIR_ORCH_STORE", os.path.join(DEFAULT_CWD, "orchestrators.json"))
 CONTEXT_DIR = os.path.join(DEFAULT_CWD, "context")
 DEFAULT_PROVIDER = "codex"
 SUPPORTED_PROVIDERS = {"codex", "copilot", "gemini", "claude"}
@@ -52,6 +53,10 @@ _SESSION_STATUS = {}
 _JOBS = {}
 _SESSION_SUBSCRIBERS = set()
 _TASK_SUBSCRIBERS = set()
+_ORCH_LOCK = threading.RLock()
+_ORCH_STATE = {}
+_PENDING_LOCK = threading.RLock()
+_PENDING_PROMPTS = {}
 
 
 def _safe_cwd(candidate):
@@ -418,6 +423,123 @@ def _save_tasks(tasks):
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def _normalize_orchestrator(value):
+    if not isinstance(value, dict):
+        return None
+    orch_id = value.get("id") or uuid.uuid4().hex
+    name = (value.get("name") or "").strip() or f"orch-{orch_id[:6]}"
+    provider = (value.get("provider") or DEFAULT_PROVIDER).lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        provider = DEFAULT_PROVIDER
+    managed = value.get("managed_sessions")
+    if not isinstance(managed, list):
+        managed = []
+    goal = (value.get("goal") or "").strip()
+    enabled = bool(value.get("enabled", False))
+    created_at = value.get("created_at")
+    history = value.get("history")
+    if not isinstance(history, list):
+        history = []
+    last_action = value.get("last_action")
+    last_decision_at = value.get("last_decision_at")
+    last_question = value.get("last_question")
+    return {
+        "id": orch_id,
+        "name": name,
+        "provider": provider,
+        "managed_sessions": managed,
+        "goal": goal,
+        "enabled": enabled,
+        "created_at": created_at,
+        "history": history,
+        "last_action": last_action,
+        "last_decision_at": last_decision_at,
+        "last_question": last_question,
+    }
+
+
+def _load_orchestrators():
+    path = pathlib.Path(ORCH_STORE_PATH)
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    items = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            orch = _normalize_orchestrator(value)
+            if orch:
+                items[orch["id"]] = orch
+    elif isinstance(raw, list):
+        for value in raw:
+            orch = _normalize_orchestrator(value)
+            if orch:
+                items[orch["id"]] = orch
+    return items
+
+
+def _save_orchestrators(data):
+    path = pathlib.Path(ORCH_STORE_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {orch_id: orch for orch_id, orch in (data or {}).items()}
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _build_orchestrator_list():
+    with _ORCH_LOCK:
+        items = list(_load_orchestrators().values())
+    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
+    return items
+
+def _append_orchestrator_history(orch_id, orch, entry):
+    if not orch_id or not entry:
+        return
+    with _ORCH_LOCK:
+        data = _load_orchestrators()
+        current = data.get(orch_id) or orch or {}
+        history = current.get("history")
+        if not isinstance(history, list):
+            history = []
+        history.append(entry)
+        if len(history) > 200:
+            history = history[-200:]
+        current["history"] = history
+        data[orch_id] = current
+        _save_orchestrators(data)
+
+
+def _build_orchestrator_history_text(history):
+    if not history:
+        return ""
+    lines = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        ts = item.get("at") or ""
+        action = item.get("action") or ""
+        target = item.get("target_session") or ""
+        prompt = item.get("prompt") or ""
+        question = item.get("question") or ""
+        raw = item.get("raw") or ""
+        header_parts = []
+        if ts:
+            header_parts.append(f"[{ts}]")
+        if action:
+            header_parts.append(action)
+        if target:
+            header_parts.append(f"target={target}")
+        header = " ".join(header_parts).strip()
+        body = prompt or question or raw or ""
+        if header and body:
+            lines.append(f"{header}\n{body}".rstrip())
+        elif header:
+            lines.append(header)
+        elif body:
+            lines.append(body)
+    return "\n\n".join(lines).strip()
+
 def _ensure_task_history(task):
     if not task or task.get("run_history"):
         return task
@@ -468,6 +590,133 @@ def _build_task_history_text(run_history, field):
         else:
             chunks.append(str(body).rstrip())
     return "\n\n".join(chunks).strip()
+
+
+def _get_latest_assistant_message(session_name):
+    if not session_name:
+        return ""
+    history = _get_history_for_name(session_name)
+    messages = history.get("messages") or []
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return msg.get("text") or ""
+    return ""
+
+
+def _extract_json_action(text):
+    if not text:
+        return None
+    start = text.find("{")
+    if start == -1:
+        return None
+    for end in range(len(text), start, -1):
+        chunk = text[start:end]
+        try:
+            data = json.loads(chunk)
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _extract_agent_text_from_events(events):
+    if not events:
+        return ""
+    parts = []
+    for evt in events:
+        if not isinstance(evt, dict):
+            continue
+        if evt.get("type") != "item.completed":
+            continue
+        item = evt.get("item") or {}
+        if item.get("type") == "agent_message":
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+    return "\n".join(parts).strip()
+
+
+def _run_orchestrator_decision(orch, session_name, latest_output):
+    provider = orch.get("provider") or DEFAULT_PROVIDER
+    goal = orch.get("goal") or ""
+    managed = orch.get("managed_sessions") or []
+    prompt = f"""TASK: Decide the next action for orchestrator "{orch.get('name')}". Respond with ONLY valid JSON.
+
+Goal:
+{goal}
+
+This orchestrator ONLY manages these sessions: {", ".join(managed) if managed else "none"}.
+Managed session just became idle: {session_name}
+Latest output:
+{latest_output}
+
+Respond with one of:
+{{"action":"inject_prompt","target_session":"<name>","prompt":"..."}}
+{{"action":"wait"}}
+{{"action":"ask_human","question":"..."}}
+
+Rules:
+- Output exactly ONE JSON object.
+- Do not include any other keys, commentary, or metadata.
+- If unsure, return {{"action":"wait"}}.
+- Prefer inject_prompt over ask_human.
+- Do NOT ask the human to choose an orchestrator.
+- If you inject, target_session MUST be the managed session name shown above.
+"""
+    config = _get_provider_config()
+    cwd = _safe_cwd(None)
+    try:
+        if provider == "codex":
+            proc, _ = _run_codex_exec(prompt, cwd, json_events=True)
+            events = _parse_json_events(proc.stdout or "")
+            text = _extract_agent_text_from_events(events) or (proc.stdout or "").strip()
+        elif provider == "copilot":
+            proc, _ = _run_copilot_exec(prompt, cwd, config=config)
+            text = _strip_copilot_footer((proc.stdout or "").strip())
+        elif provider == "gemini":
+            text = _run_gemini_exec(prompt, [], config=config, cwd=cwd)
+        elif provider == "claude":
+            text = _run_claude_exec(prompt, config=config, cwd=cwd)
+        else:
+            return None
+    except Exception as exc:
+        logger.error(f"[Orchestrator] decision failed: {exc}")
+        return None
+    parsed = _extract_json_action(text)
+    if parsed is None or not isinstance(parsed, dict) or not parsed.get("action"):
+        return {"action": "parse_error", "raw": text}
+    parsed["_raw"] = text
+    return parsed
+
+
+def _inject_prompt_to_session(session_name, prompt):
+    if not session_name or not prompt:
+        return
+    if _get_session_status(session_name) == "running":
+        return
+    provider = _get_session_provider_for_name(session_name)
+    resume_session_id = _get_session_id_for_name(session_name)
+    job_key = f"{provider}:{session_name}"
+    with _JOB_LOCK:
+        existing = _JOBS.get(job_key)
+        if existing and not existing.done.is_set():
+            return
+        job = _Job(
+            job_key,
+            session_name,
+            prompt,
+            _safe_cwd(None),
+            [],
+            300,
+            resume_session_id,
+            False,
+            True,
+            provider,
+        )
+        _JOBS[job_key] = job
+        _set_session_status(session_name, "running")
+        _start_job(job)
 
 
 def _schedule_summary(task):
@@ -1740,11 +1989,13 @@ def home():
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
     provider_models = _get_provider_model_info()
+    orchestrators = _build_orchestrator_list()
     return render_template(
         "chat.html",
         sessions=sessions,
         session_list=session_list,
         session_status=session_status,
+        orchestrators=orchestrators,
         selected_provider=DEFAULT_PROVIDER,
         default_provider=DEFAULT_PROVIDER,
         history_messages=[],
@@ -1763,11 +2014,13 @@ def chat_home():
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
     provider_models = _get_provider_model_info()
+    orchestrators = _build_orchestrator_list()
     return render_template(
         "chat.html",
         sessions=sessions,
         session_list=session_list,
         session_status=session_status,
+        orchestrators=orchestrators,
         selected_provider=DEFAULT_PROVIDER,
         default_provider=DEFAULT_PROVIDER,
         history_messages=[],
@@ -1789,6 +2042,7 @@ def chat_named(name):
     selected_provider = _get_session_provider_for_name(name)
     _touch_session(name)
     provider_models = _get_provider_model_info()
+    orchestrators = _build_orchestrator_list()
     # Get session-specific workdir if set
     session_record = sessions.get(name) or {}
     session_workdir = (session_record.get("workdir") or "").strip() if isinstance(session_record, dict) else ""
@@ -1797,6 +2051,7 @@ def chat_named(name):
         sessions=sessions,
         session_list=session_list,
         session_status=session_status,
+        orchestrators=orchestrators,
         selected=name,
         selected_provider=selected_provider,
         default_provider=DEFAULT_PROVIDER,
@@ -1846,12 +2101,14 @@ def task_view(task_id):
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
     provider_models = _get_provider_model_info()
+    orchestrators = _build_orchestrator_list()
     
     return render_template(
         "chat.html",
         sessions=sessions,
         session_list=session_list,
         session_status=session_status,
+        orchestrators=orchestrators,
         default_provider=DEFAULT_PROVIDER,
         history_messages=[],
         history_tools=[],
@@ -1872,6 +2129,7 @@ def task_new():
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
     provider_models = _get_provider_model_info()
+    orchestrators = _build_orchestrator_list()
     empty_task = {
         "id": "",
         "name": "",
@@ -1893,6 +2151,7 @@ def task_new():
         sessions=sessions,
         session_list=session_list,
         session_status=session_status,
+        orchestrators=orchestrators,
         default_provider=DEFAULT_PROVIDER,
         history_messages=[],
         history_tools=[],
@@ -1901,6 +2160,39 @@ def task_new():
         selected_task=empty_task,
         view_mode="task",
         is_new_task=True,
+    )
+
+
+@APP.get("/orchestrator/<orch_id>")
+def orchestrator_view(orch_id):
+    with _SESSION_LOCK:
+        sessions = _load_sessions()
+    with _ORCH_LOCK:
+        orchestrators = _load_orchestrators()
+    orch = orchestrators.get(orch_id)
+    if not orch:
+        return "Orchestrator not found", 404
+    config = _load_client_config()
+    default_workdir = (config.get("default_workdir") or "").strip()
+    session_status = _sessions_with_status(sessions)
+    session_list = _build_session_list(sessions)
+    provider_models = _get_provider_model_info()
+    orch_list = _build_orchestrator_list()
+    history_text = _build_orchestrator_history_text(orch.get("history"))
+    orch["history_text"] = history_text
+    return render_template(
+        "chat.html",
+        sessions=sessions,
+        session_list=session_list,
+        session_status=session_status,
+        orchestrators=orch_list,
+        default_provider=DEFAULT_PROVIDER,
+        history_messages=[],
+        history_tools=[],
+        default_workdir=default_workdir,
+        provider_models=provider_models,
+        selected_orchestrator=orch,
+        view_mode="orchestrator",
     )
 
 
@@ -2284,6 +2576,55 @@ def _broadcast_agent_message(job, text):
     job.broadcast(f"data: stdout:{json.dumps(evt)}\n\n")
 
 
+def _enqueue_pending_prompt(session_name, payload):
+    if not session_name or not payload:
+        return
+    with _PENDING_LOCK:
+        queue = _PENDING_PROMPTS.setdefault(session_name, deque())
+        queue.append(payload)
+
+
+def _dequeue_pending_prompt(session_name):
+    with _PENDING_LOCK:
+        queue = _PENDING_PROMPTS.get(session_name)
+        if queue:
+            return queue.popleft()
+    return None
+
+
+def _start_next_pending(session_name):
+    if not session_name:
+        return
+    payload = _dequeue_pending_prompt(session_name)
+    if not payload:
+        return
+    provider = payload.get("provider") or _get_session_provider_for_name(session_name)
+    resume_session_id = _get_session_id_for_name(session_name)
+    job_key = f"{provider}:{session_name}"
+    with _JOB_LOCK:
+        existing = _JOBS.get(job_key)
+        if existing and not existing.done.is_set():
+            # put it back if still running
+            _enqueue_pending_prompt(session_name, payload)
+            return
+        job = _Job(
+            job_key,
+            session_name,
+            payload.get("prompt"),
+            payload.get("cwd"),
+            payload.get("extra_args") or [],
+            payload.get("timeout_sec") or 300,
+            resume_session_id,
+            bool(payload.get("resume_last", False)),
+            bool(payload.get("json_events", True)),
+            provider,
+            context_briefing=payload.get("context_briefing"),
+        )
+        _JOBS[job_key] = job
+        _set_session_status(session_name, "running")
+        _start_job(job)
+
+
 def _broadcast_error(job, text):
     _log_event(
         {
@@ -2435,6 +2776,10 @@ def _start_codex_job(job):
         _set_session_status(job.session_name, "idle")
         with _JOB_LOCK:
             _JOBS.pop(job.key, None)
+        _start_next_pending(job.session_name)
+        _start_next_pending(job.session_name)
+        _start_next_pending(job.session_name)
+        _start_next_pending(job.session_name)
 
     thread = threading.Thread(target=runner, daemon=True)
     thread.start()
@@ -3000,6 +3345,82 @@ def _task_scheduler_loop():
         time.sleep(30)
 
 
+def _orchestrator_loop():
+    while True:
+        try:
+            with _ORCH_LOCK:
+                orchestrators = _load_orchestrators()
+            for orch_id, orch in orchestrators.items():
+                if not orch.get("enabled"):
+                    continue
+                managed = orch.get("managed_sessions") or []
+                if not managed:
+                    continue
+                state = _ORCH_STATE.setdefault(orch_id, {})
+                for name in managed:
+                    status = _get_session_status(name)
+                    entry = state.get(name) or {"status": None, "handled_idle": False}
+                    prev = entry.get("status")
+                    entry["status"] = status
+                    if status == "running":
+                        entry["handled_idle"] = False
+                    state[name] = entry
+                    should_handle = False
+                    if prev == "running" and status == "idle":
+                        should_handle = True
+                    elif prev is None and status == "idle" and not entry.get("handled_idle"):
+                        should_handle = True
+                    if should_handle:
+                        latest = _get_latest_assistant_message(name)
+                        action = _run_orchestrator_decision(orch, name, latest)
+                        if not action or not isinstance(action, dict):
+                            continue
+                        now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+                        action_type = action.get("action") or ""
+                        if action_type == "ask_human":
+                            question = action.get("question") or ""
+                            lower_q = question.lower()
+                            fallback_prompt = (
+                                f"Based on the latest output, propose the next concrete steps to progress this goal:\n{orch.get('goal') or ''}"
+                            ).strip()
+                            use_prompt = question
+                            if "orchestrator" in lower_q or "which" in lower_q and "orch" in lower_q:
+                                use_prompt = fallback_prompt
+                            action_type = "inject_prompt"
+                            action = {
+                                "action": "inject_prompt",
+                                "target_session": name,
+                                "prompt": use_prompt,
+                                "question": question,
+                            }
+                        if action_type == "inject_prompt":
+                            target = action.get("target_session")
+                            prompt = action.get("prompt")
+                            if target in managed and prompt:
+                                _inject_prompt_to_session(target, prompt)
+                        history_entry = {
+                            "at": now_iso,
+                            "action": action_type,
+                            "target_session": action.get("target_session") or name,
+                            "prompt": action.get("prompt") or "",
+                            "question": action.get("question") or "",
+                            "raw": action.get("raw") or action.get("_raw") or "",
+                        }
+                        _append_orchestrator_history(orch_id, orch, history_entry)
+                        entry["handled_idle"] = True
+                        with _ORCH_LOCK:
+                            data = _load_orchestrators()
+                            current = data.get(orch_id) or orch
+                            current["last_action"] = action_type
+                            current["last_decision_at"] = now_iso
+                            current["last_question"] = action.get("question") if action_type == "ask_human" else ""
+                            data[orch_id] = current
+                            _save_orchestrators(data)
+        except Exception as exc:
+            logger.error(f"[Orchestrator] loop error: {exc}")
+        time.sleep(3)
+
+
 @APP.post("/stream")
 def stream_codex():
     body = request.get_json(silent=True) or {}
@@ -3098,7 +3519,24 @@ def stream_codex():
             if attach or not prompt:
                 job = existing
             else:
-                return jsonify({"error": "session is already running"}), 409
+                queued_payload = {
+                    "prompt": prompt,
+                    "provider": provider,
+                    "cwd": cwd,
+                    "extra_args": extra_args,
+                    "timeout_sec": timeout_sec,
+                    "resume_last": resume_last,
+                    "json_events": json_events,
+                    "context_briefing": context_briefing,
+                }
+                _enqueue_pending_prompt(session_name, queued_payload)
+
+                def queued_stream():
+                    evt = {"type": "item.completed", "item": {"type": "agent_message", "text": "Queued: message will run after the current response finishes."}}
+                    yield f"data: stdout:{json.dumps(evt)}\n\n"
+                    yield "event: done\ndata: queued=1\n\n"
+
+                return Response(queued_stream(), mimetype="text/event-stream; charset=utf-8")
         else:
             if not prompt or not isinstance(prompt, str):
                 return jsonify({"error": "prompt must be a non-empty string"}), 400
@@ -3168,6 +3606,113 @@ def stream_sessions():
 def list_tasks():
     snapshot = _build_tasks_snapshot()
     return jsonify(snapshot)
+
+
+@APP.get("/orchestrators")
+def list_orchestrators():
+    return jsonify({"count": len(_build_orchestrator_list()), "orchestrators": _build_orchestrator_list()})
+
+
+@APP.post("/orchestrators")
+def create_orchestrator():
+    body = request.get_json(silent=True) or {}
+    name = (body.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "name is required"}), 400
+    provider = (body.get("provider") or DEFAULT_PROVIDER).lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        provider = DEFAULT_PROVIDER
+    managed = body.get("managed_sessions")
+    if not isinstance(managed, list):
+        managed = []
+    goal = (body.get("goal") or "").strip()
+    if not goal:
+        goal = (
+            "Act as a project manager across any task type. Always do the next concrete step toward completion: "
+            "decide, execute, then report. After every session reply, inject the single most valuable next action "
+            "(no questions unless truly blocking). Run tests or a quick manual run when relevant, fix errors until "
+            "the objective is complete, and use MCP tools (e.g., Playwright) to validate outputs or UI. "
+            "Keep progress moving without waiting for human input."
+        )
+    enabled = bool(body.get("enabled", True))
+    orch_id = uuid.uuid4().hex
+    record = {
+        "id": orch_id,
+        "name": name,
+        "provider": provider,
+        "managed_sessions": managed,
+        "goal": goal,
+        "enabled": enabled,
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "history": [],
+    }
+    with _ORCH_LOCK:
+        data = _load_orchestrators()
+        data[orch_id] = record
+        _save_orchestrators(data)
+    return jsonify({"ok": True, "orchestrator": record})
+
+
+@APP.patch("/orchestrators/<orch_id>")
+def update_orchestrator(orch_id):
+    body = request.get_json(silent=True) or {}
+    with _ORCH_LOCK:
+        data = _load_orchestrators()
+        orch = data.get(orch_id)
+        if not orch:
+            return jsonify({"error": "not found"}), 404
+        if "name" in body:
+            orch["name"] = (body.get("name") or "").strip() or orch.get("name")
+        if "provider" in body:
+            provider = (body.get("provider") or "").strip().lower()
+            if provider in SUPPORTED_PROVIDERS:
+                orch["provider"] = provider
+        if "managed_sessions" in body and isinstance(body.get("managed_sessions"), list):
+            orch["managed_sessions"] = body.get("managed_sessions")
+        if "goal" in body:
+            orch["goal"] = (body.get("goal") or "").strip()
+        if "enabled" in body:
+            orch["enabled"] = bool(body.get("enabled"))
+        data[orch_id] = orch
+        _save_orchestrators(data)
+    return jsonify({"ok": True, "orchestrator": orch})
+
+
+@APP.post("/orchestrators/<orch_id>/start")
+def start_orchestrator(orch_id):
+    with _ORCH_LOCK:
+        data = _load_orchestrators()
+        orch = data.get(orch_id)
+        if not orch:
+            return jsonify({"error": "not found"}), 404
+        orch["enabled"] = True
+        data[orch_id] = orch
+        _save_orchestrators(data)
+    return jsonify({"ok": True})
+
+
+@APP.post("/orchestrators/<orch_id>/pause")
+def pause_orchestrator(orch_id):
+    with _ORCH_LOCK:
+        data = _load_orchestrators()
+        orch = data.get(orch_id)
+        if not orch:
+            return jsonify({"error": "not found"}), 404
+        orch["enabled"] = False
+        data[orch_id] = orch
+        _save_orchestrators(data)
+    return jsonify({"ok": True})
+
+
+@APP.delete("/orchestrators/<orch_id>")
+def delete_orchestrator(orch_id):
+    with _ORCH_LOCK:
+        data = _load_orchestrators()
+        if orch_id not in data:
+            return jsonify({"error": "not found"}), 404
+        data.pop(orch_id, None)
+        _save_orchestrators(data)
+    return jsonify({"ok": True})
 
 
 @APP.get("/tasks/stream")
@@ -3456,4 +4001,5 @@ if __name__ == "__main__":
     
     port = int(os.environ.get("PORT", "5025"))
     threading.Thread(target=_task_scheduler_loop, daemon=True).start()
+    threading.Thread(target=_orchestrator_loop, daemon=True).start()
     APP.run(host="0.0.0.0", port=port, debug=False, threaded=True)

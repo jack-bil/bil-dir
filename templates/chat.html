@@ -458,7 +458,23 @@
         flex-direction: column;
         gap: 8px;
       }
+      .orchestrators-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
       .tasks-list li {
+        padding: 0;
+        margin: 0;
+        list-style: none;
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        overflow: visible;
+      }
+      .orchestrators-list li {
         padding: 0;
         margin: 0;
         list-style: none;
@@ -482,13 +498,34 @@
         cursor: pointer;
         transition: all 0.2s ease;
       }
+      .orchestrator-card {
+        border: none;
+        border-radius: 6px;
+        padding: 10px;
+        background: transparent;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        color: inherit;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
       .task-card:hover {
         background: rgba(110, 231, 183, 0.08);
       }
       .task-card.active {
         background: rgba(110, 231, 183, 0.08);
       }
+      .orchestrator-card.active {
+        background: rgba(110, 231, 183, 0.08);
+      }
       .task-meta {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+      }
+      .orchestrator-meta {
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -501,6 +538,62 @@
         display: inline-flex;
         gap: 8px;
         align-items: center;
+      }
+      .orchestrator-actions {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+      }
+      .orchestrator-detail {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .orch-toggle-btn {
+        border: 1px solid var(--border);
+        background: #0b0f16;
+        color: var(--ink);
+        border-radius: 8px;
+        padding: 4px 8px;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .orch-toggle-btn:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .orch-delete-btn {
+        border: 1px solid rgba(248, 113, 113, 0.6);
+        background: rgba(127, 29, 29, 0.2);
+        color: #fca5a5;
+        border-radius: 8px;
+        padding: 4px 8px;
+        font-size: 11px;
+        cursor: pointer;
+      }
+      .orch-delete-btn:hover {
+        border-color: #ef4444;
+        color: #fecaca;
+      }
+      #orchHistory {
+        margin-top: 8px;
+      }
+      .orch-goal-box {
+        background: #0b0f16;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+      }
+      .orch-goal-box textarea {
+        width: 100%;
+        min-height: 90px;
+        background: transparent;
+        color: var(--ink);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 8px;
+        padding: 10px;
+        font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        font-size: 13px;
+        resize: vertical;
       }
       .task-menu .menu-btn {
         width: 28px;
@@ -1321,6 +1414,54 @@
         </div>
       </form>
     </div>
+    <div class="modal-overlay" id="addOrchOverlay"></div>
+    <div class="modal" id="addOrchModal" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title">New Orchestrator</div>
+        <button class="copy-btn" id="addOrchCloseBtn" aria-label="Close">✕</button>
+      </div>
+      <form id="addOrchForm">
+        <div class="form-group">
+          <label for="orchName">Name</label>
+          <input type="text" id="orchName" placeholder="Enter orchestrator name" required autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="orchProvider">Manager Provider</label>
+          <select id="orchProvider">
+            <option value="codex">codex</option>
+            <option value="copilot">copilot</option>
+            <option value="gemini">gemini</option>
+            <option value="claude">claude</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="orchGoal">Goal</label>
+          <textarea id="orchGoal" placeholder="Short goal for the orchestrator">Act as a project manager across any task type. Always do the next concrete step toward completion: decide, execute, then report. After every session reply, inject the single most valuable next action (no questions unless truly blocking). Run tests or a quick manual run when relevant, fix errors until the objective is complete, and use MCP tools (e.g., Playwright) to validate outputs or UI. Keep progress moving without waiting for human input.</textarea>
+        </div>
+        <div class="form-group">
+          <label>Managed Sessions</label>
+          <div class="checkbox-group" id="orchSessionList">
+            {% if session_list %}
+              {% for item in session_list %}
+              <label class="checkbox-row"><input type="checkbox" value="{{ item.name }}" /> {{ item.name }}</label>
+              {% endfor %}
+            {% else %}
+              <div class="muted">No sessions available.</div>
+            {% endif %}
+          </div>
+        </div>
+        <div class="form-group">
+          <label>
+            <input type="checkbox" id="orchEnabled" checked />
+            Start immediately
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" id="addOrchCancelBtn">Cancel</button>
+          <button type="submit" class="btn-primary">Create</button>
+        </div>
+      </form>
+    </div>
     <main>
       <section class="panel sessions">
         <div class="section-header">
@@ -1427,6 +1568,18 @@
               <button type="button" class="cancel-btn" id="cancelTaskBtn">Cancel</button>
             </div>
           </div>
+        </div>
+        <div class="section-header" style="margin-top:12px;">
+          <button class="section-toggle" id="orchToggle" type="button" aria-expanded="true">
+            <span>▾</span>
+            Orchestrators
+          </button>
+          <button class="icon-round" id="addOrchBtn" type="button" aria-label="Add orchestrator" title="Add orchestrator">+</button>
+        </div>
+        <div class="section-body" id="orchBody">
+          <ul class="orchestrators-list" id="orchestratorsList">
+            <li class="muted">No orchestrators yet.</li>
+          </ul>
         </div>
       </section>
       <section class="panel chat">
@@ -1561,6 +1714,51 @@
           </details>
           {% endif %}
         </div>
+        {% elif view_mode == 'orchestrator' and selected_orchestrator %}
+        <div class="task-detail-view" id="orchDetailView">
+          <div class="task-header">
+            <h2>{{ selected_orchestrator.name }}</h2>
+            <div class="task-header-actions">
+              <span class="provider-tag" data-provider>{{ selected_orchestrator.provider }}</span>
+            </div>
+          </div>
+          <div class="task-output-section">
+            <h3>Goal</h3>
+            <div class="orch-goal-box">
+              <textarea id="orchGoalEdit" placeholder="Describe the manager's goal...">{{ selected_orchestrator.goal or "" }}</textarea>
+              {% if not selected_orchestrator.goal %}
+              <div class="muted" style="margin-top:8px;">No goal set.</div>
+              {% endif %}
+              <div class="row" style="margin-top:10px;">
+                <button type="button" class="primary-btn" id="orchSaveBtn">Save goal</button>
+              </div>
+            </div>
+          </div>
+          <div class="task-output-section">
+            <h3>Managed Sessions</h3>
+            <div class="orch-goal-box">
+              <div class="checkbox-group" id="orchManagedList">
+                {% if session_list %}
+                  {% for item in session_list %}
+                  <label class="checkbox-row">
+                    <input type="checkbox" value="{{ item.name }}" {% if selected_orchestrator.managed_sessions and item.name in selected_orchestrator.managed_sessions %}checked{% endif %} />
+                    {{ item.name }}
+                  </label>
+                  {% endfor %}
+                {% else %}
+                  <div class="muted">No sessions available.</div>
+                {% endif %}
+              </div>
+              <div class="row" style="margin-top:10px;">
+                <button type="button" class="primary-btn" id="orchSaveManagedBtn">Save managed sessions</button>
+              </div>
+            </div>
+          </div>
+          <div class="task-output-section">
+            <h3>History</h3>
+            <pre class="task-output-content">{{ selected_orchestrator.history_text }}</pre>
+          </div>
+        </div>
         {% else %}
         <div class="empty-state" id="emptyState">
           <div class="empty-content">
@@ -1622,6 +1820,20 @@
       const tasksToggle = document.getElementById("tasksToggle");
       const tasksBody = document.getElementById("tasksBody");
       const tasksList = document.getElementById("tasksList");
+      const orchToggle = document.getElementById("orchToggle");
+      const orchBody = document.getElementById("orchBody");
+      const orchestratorsList = document.getElementById("orchestratorsList");
+      const addOrchBtn = document.getElementById("addOrchBtn");
+      const addOrchOverlay = document.getElementById("addOrchOverlay");
+      const addOrchModal = document.getElementById("addOrchModal");
+      const addOrchForm = document.getElementById("addOrchForm");
+      const addOrchCloseBtn = document.getElementById("addOrchCloseBtn");
+      const addOrchCancelBtn = document.getElementById("addOrchCancelBtn");
+      const orchNameInput = document.getElementById("orchName");
+      const orchProviderSelect = document.getElementById("orchProvider");
+      const orchGoalInput = document.getElementById("orchGoal");
+      const orchSessionList = document.getElementById("orchSessionList");
+      const orchEnabledInput = document.getElementById("orchEnabled");
       const addTaskBtn = document.getElementById("addTaskBtn");
       const taskForm = document.getElementById("taskForm");
       const taskNameInput = document.getElementById("taskName");
@@ -1637,13 +1849,16 @@
       const cancelTaskBtn = document.getElementById("cancelTaskBtn");
       let editingTaskId = null;
       let taskCache = {};
+      let orchCache = {};
       const initialMessages = {{ history_messages|tojson }};
       const initialToolOutputs = {{ history_tools|tojson }};
       console.log("Loaded history - messages:", initialMessages?.length || 0, "tools:", initialToolOutputs?.length || 0);
       const sessionStatus = {{ session_status|tojson }};
       const selectedProvider = "{{ selected_provider or default_provider }}";
       const selectedSession = document.body.dataset.selected || "";
+      const selectedOrchId = "{{ selected_orchestrator.id if selected_orchestrator else '' }}";
       const providerModels = {{ provider_models|tojson }};
+      const initialOrchestrators = {{ orchestrators|tojson }};
 
       // Show empty state if no session selected
       const emptyState = document.getElementById("emptyState");
@@ -1942,6 +2157,55 @@
         el.innerHTML = linkifyText(escapeHtml(raw));
         el.dataset.linkified = "true";
       });
+
+      const orchSaveBtn = document.getElementById("orchSaveBtn");
+      const orchGoalEdit = document.getElementById("orchGoalEdit");
+      if (orchSaveBtn && orchGoalEdit && selectedOrchId) {
+        orchSaveBtn.addEventListener("click", async () => {
+          const goal = orchGoalEdit.value.trim();
+          try {
+            const resp = await fetch(`/orchestrators/${encodeURIComponent(selectedOrchId)}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ goal }),
+            });
+            if (!resp.ok) {
+              const data = await resp.json().catch(() => ({}));
+              alert(data.error || "Failed to update goal");
+              return;
+            }
+            refreshOrchestrators();
+          } catch (err) {
+            console.error("Failed to update goal:", err);
+            alert("Failed to update goal");
+          }
+        });
+      }
+
+      const orchSaveManagedBtn = document.getElementById("orchSaveManagedBtn");
+      const orchManagedList = document.getElementById("orchManagedList");
+      if (orchSaveManagedBtn && orchManagedList && selectedOrchId) {
+        orchSaveManagedBtn.addEventListener("click", async () => {
+          const managed = Array.from(orchManagedList.querySelectorAll("input[type='checkbox']:checked"))
+            .map((cb) => cb.value);
+          try {
+            const resp = await fetch(`/orchestrators/${encodeURIComponent(selectedOrchId)}`, {
+              method: "PATCH",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ managed_sessions: managed }),
+            });
+            if (!resp.ok) {
+              const data = await resp.json().catch(() => ({}));
+              alert(data.error || "Failed to update managed sessions");
+              return;
+            }
+            refreshOrchestrators();
+          } catch (err) {
+            console.error("Failed to update managed sessions:", err);
+            alert("Failed to update managed sessions");
+          }
+        });
+      }
       
       // Auto-resize textarea as user types
       if (promptInput) {
@@ -2023,6 +2287,7 @@
 
       wireSectionToggle(sessionsToggle, sessionsBody);
       wireSectionToggle(tasksToggle, tasksBody);
+      wireSectionToggle(orchToggle, orchBody);
 
       function updateTaskScheduleFields() {
         const type = taskScheduleType ? taskScheduleType.value : "manual";
@@ -2778,6 +3043,71 @@
         });
       }
 
+      // Add Orchestrator Modal
+      function openAddOrchModal() {
+        if (orchNameInput) orchNameInput.value = "";
+        if (orchProviderSelect) orchProviderSelect.value = "codex";
+        if (orchGoalInput) orchGoalInput.value = "";
+        if (orchEnabledInput) orchEnabledInput.checked = true;
+        if (orchSessionList) {
+          orchSessionList.querySelectorAll("input[type='checkbox']").forEach((cb) => {
+            cb.checked = false;
+          });
+        }
+        if (addOrchOverlay) addOrchOverlay.classList.add("open");
+        if (addOrchModal) addOrchModal.classList.add("open");
+        setTimeout(() => orchNameInput && orchNameInput.focus(), 50);
+      }
+
+      function closeAddOrchModal() {
+        if (addOrchOverlay) addOrchOverlay.classList.remove("open");
+        if (addOrchModal) addOrchModal.classList.remove("open");
+      }
+
+      if (addOrchBtn) {
+        addOrchBtn.addEventListener("click", openAddOrchModal);
+      }
+      if (addOrchCloseBtn) {
+        addOrchCloseBtn.addEventListener("click", closeAddOrchModal);
+      }
+      if (addOrchCancelBtn) {
+        addOrchCancelBtn.addEventListener("click", closeAddOrchModal);
+      }
+      if (addOrchOverlay) {
+        addOrchOverlay.addEventListener("click", closeAddOrchModal);
+      }
+
+      if (addOrchForm) {
+        addOrchForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const name = orchNameInput ? orchNameInput.value.trim() : "";
+          if (!name) return;
+          const provider = orchProviderSelect ? orchProviderSelect.value : "codex";
+          const goal = orchGoalInput ? orchGoalInput.value.trim() : "";
+          const managed = orchSessionList
+            ? Array.from(orchSessionList.querySelectorAll("input[type='checkbox']:checked")).map((cb) => cb.value)
+            : [];
+          const enabled = orchEnabledInput ? orchEnabledInput.checked : true;
+          try {
+            const resp = await fetch("/orchestrators", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ name, provider, goal, managed_sessions: managed, enabled }),
+            });
+            if (!resp.ok) {
+              const data = await resp.json().catch(() => ({}));
+              alert(data.error || "Failed to create orchestrator");
+              return;
+            }
+            closeAddOrchModal();
+            await refreshOrchestrators();
+          } catch (err) {
+            console.error("Failed to create orchestrator:", err);
+            alert("Failed to create orchestrator");
+          }
+        });
+      }
+
       async function saveTask() {
         const name = (taskNameInput && taskNameInput.value ? taskNameInput.value.trim() : "");
         const prompt = (taskPromptInput && taskPromptInput.value ? taskPromptInput.value.trim() : "");
@@ -2891,8 +3221,121 @@
         }
       }
 
+      function renderOrchestrators(orchestrators) {
+        if (!orchestratorsList) return;
+        const sessionsPanel = document.querySelector(".sessions");
+        const prevScroll = sessionsPanel ? sessionsPanel.scrollTop : 0;
+        if (!orchestrators || !orchestrators.length) {
+          orchestratorsList.innerHTML = '<li class="muted">No orchestrators yet.</li>';
+          orchCache = {};
+          return;
+        }
+        orchCache = {};
+        const ordered = [...orchestrators].sort((a, b) => {
+          const aCreated = a.created_at || "";
+          const bCreated = b.created_at || "";
+          if (aCreated !== bCreated) {
+            return bCreated.localeCompare(aCreated);
+          }
+          return (a.name || "").localeCompare(b.name || "");
+        });
+        orchestratorsList.innerHTML = ordered
+          .map((orch) => {
+            orchCache[orch.id] = orch;
+            const enabled = !!orch.enabled;
+            const statusText = enabled ? "Enabled" : "Paused";
+            const managed = Array.isArray(orch.managed_sessions) ? orch.managed_sessions.length : 0;
+            const managedText = managed === 1 ? "1 session" : `${managed} sessions`;
+            const goalText = orch.goal ? escapeHtml(orch.goal) : "No goal set";
+            const lastAt = orch.last_decision_at ? `Last decision: ${orch.last_decision_at}` : "No decisions yet";
+            const lastAction = orch.last_action ? ` (${orch.last_action})` : "";
+            const lastQuestion = orch.last_question ? ` · ${escapeHtml(orch.last_question)}` : "";
+            const activeClass = selectedOrchId && selectedOrchId === orch.id ? "active" : "";
+            return `
+              <li class="${activeClass}">
+                <div class="orchestrator-card ${enabled ? "active" : ""}" data-orch-id="${orch.id}">
+                  <div class="orchestrator-meta">
+                    <div>
+                      <strong>${escapeHtml(orch.name)}</strong>
+                      <div class="orchestrator-detail">${managedText} · <span class="provider-tag" data-provider>${orch.provider}</span></div>
+                    </div>
+                    <div class="orchestrator-actions">
+                      <span class="status-dot ${enabled ? "running" : ""}" aria-label="${statusText}" title="${statusText}"></span>
+                      <button class="orch-toggle-btn" data-orch-action="toggle">${enabled ? "Pause" : "Start"}</button>
+                      <button class="orch-delete-btn" data-orch-action="delete">Delete</button>
+                    </div>
+                  </div>
+                  <div class="orchestrator-detail">${goalText}</div>
+                  <div class="orchestrator-detail">${lastAt}${lastAction}${lastQuestion}</div>
+                </div>
+              </li>
+            `;
+          })
+          .join("");
+        if (sessionsPanel) {
+          sessionsPanel.scrollTop = prevScroll;
+        }
+      }
+
+      async function refreshOrchestrators() {
+        try {
+          const resp = await fetch("/orchestrators");
+          if (resp.ok) {
+            const data = await resp.json();
+            renderOrchestrators(data.orchestrators || []);
+          }
+        } catch (err) {
+          // ignore
+        }
+      }
+
       function wireTaskButtons() {
         // Task actions are handled via the shared flyout menu.
+      }
+
+      if (orchestratorsList) {
+        orchestratorsList.addEventListener("click", async (e) => {
+          const btn = e.target.closest("[data-orch-action]");
+          if (!btn) return;
+          e.preventDefault();
+          e.stopPropagation();
+          const card = btn.closest("[data-orch-id]");
+          const orchId = card ? card.getAttribute("data-orch-id") : "";
+          if (!orchId) return;
+          const orch = orchCache[orchId];
+          const enabled = orch ? !!orch.enabled : false;
+          const action = btn.getAttribute("data-orch-action");
+          if (action === "delete") {
+            const ok = confirm("Delete this orchestrator?");
+            if (!ok) return;
+            try {
+              await fetch(`/orchestrators/${encodeURIComponent(orchId)}`, { method: "DELETE" });
+            } catch (err) {
+              console.error("Failed to delete orchestrator:", err);
+            }
+            refreshOrchestrators();
+            if (selectedOrchId === orchId) {
+              window.location.href = "/chat";
+            }
+            return;
+          }
+          const endpoint = enabled ? `/orchestrators/${encodeURIComponent(orchId)}/pause` : `/orchestrators/${encodeURIComponent(orchId)}/start`;
+          try {
+            await fetch(endpoint, { method: "POST" });
+          } catch (err) {
+            console.error("Failed to toggle orchestrator:", err);
+          }
+          refreshOrchestrators();
+        });
+        orchestratorsList.addEventListener("click", (e) => {
+          const btn = e.target.closest("[data-orch-action]");
+          if (btn) return;
+          const card = e.target.closest("[data-orch-id]");
+          if (!card) return;
+          const orchId = card.getAttribute("data-orch-id");
+          if (!orchId) return;
+          window.location.href = `/orchestrator/${encodeURIComponent(orchId)}`;
+        });
       }
 
       function wireTaskStream() {
@@ -2927,6 +3370,9 @@
       // Always run to show task status, even when viewing a specific task
       const viewMode = "{{ view_mode if view_mode else '' }}";
       wireTaskStream();
+      renderOrchestrators(initialOrchestrators || []);
+      refreshOrchestrators();
+      setInterval(refreshOrchestrators, 4000);
 
       // Task detail view handlers
       if (document.getElementById("taskEditForm")) {
@@ -3253,6 +3699,12 @@
         restoreSectionState(tasksToggle, tasksBody, "tasksCollapsed");
         tasksToggle.addEventListener("click", () => {
           persistSectionState("tasksCollapsed", tasksBody.classList.contains("collapsed"));
+        });
+      }
+      if (orchToggle && orchBody) {
+        restoreSectionState(orchToggle, orchBody, "orchCollapsed");
+        orchToggle.addEventListener("click", () => {
+          persistSectionState("orchCollapsed", orchBody.classList.contains("collapsed"));
         });
       }
 
