@@ -1,11 +1,13 @@
 # Bil-dir
 
-Bil-dir is a local Flask app that orchestrates multiple AI CLIs (Codex, Copilot, Gemini, Claude) with sessions, tasks, and MCP support.
+Bil-dir is a local Flask app that orchestrates multiple AI CLIs (Codex, Copilot, Gemini, Claude) with sessions, tasks, orchestrators, and MCP support.
 
 ## What it does
 - Chat UI with named sessions and per-session model selection.
+- Master console that aggregates replies from all sessions and supports routing via `@@session-name: message`.
+- Orchestrators: manager agents that supervise one or more sessions with a goal and history.
 - Tasks: one-shot prompts that can be scheduled (interval/daily/weekly/once) and run independently.
-- MCP configuration for Codex + Copilot.
+- CLI-style streaming output with ANSI color support and activity panes.
 - Server-Sent Events (SSE) for live updates.
 
 ## Setup
@@ -19,12 +21,13 @@ pip install -r requirements.txt
 When you first run the app, it will automatically create these files in the project directory:
 - `sessions.json` - Session storage
 - `tasks.json` - Task storage
+- `orchestrators.json` - Orchestrator storage
 - `history.json` - Command history
 - `log.jsonl` - Event logs
 - `client_config.json` - UI preferences
 - `context/` - Context files directory
 
-These files are git-ignored and will be created with default values on first startup.
+These files are git-ignored and will be created with default values on first startup. The repo ships empty `history.json` and `log.jsonl` to avoid leaking sensitive data.
 
 ## Prereqs
 - Python 3.10+ (3.11/3.12 ok)
@@ -37,7 +40,7 @@ python app.py
 ```
 Open in your browser:
 ```
-http://127.0.0.1:5025/chat
+http://127.0.0.1:5025/
 ```
 
 ## Production (Windows)
@@ -61,7 +64,14 @@ Open `/config` and use the tabs:
 - General: CLI availability + CLI paths.
 - Set a default working directory (used when no per-request path is set).
 - Permissions: per-model full-permissions toggles and sandbox mode (Codex honors `--sandbox` from here).
-- MCP: JSON config + quick-add buttons. Applies to Codex and Copilot.
+- MCP: JSON config + quick-add buttons. Applies to Codex. Copilot MCP is disabled by default to avoid invalid config errors.
+
+Enable MCP for Copilot by adding this to `client_config.json`:
+```json
+{
+  "copilot_enable_mcp": true
+}
+```
 
 ## Usage
 Health check:
@@ -132,6 +142,15 @@ Update a task:
 $body = @{ enabled = $false } | ConvertTo-Json
 Invoke-RestMethod -Method Patch -Uri http://127.0.0.1:5025/tasks/{task_id} -Body $body -ContentType "application/json"
 ```
+
+## Master console
+Open `/master` to see a consolidated feed of session responses. You can route messages to a specific session from the master input using:
+```
+@@session-name: your message here
+```
+
+## Orchestrators
+Create orchestrators from the UI to manage sessions with a goal. Orchestrators keep a decision history and can inject prompts into managed sessions.
 
 ## Security notes
 - Bind to localhost unless you add authentication.
