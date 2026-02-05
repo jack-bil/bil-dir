@@ -864,16 +864,18 @@ def _save_sessions(data):
 def _load_client_config():
     path = pathlib.Path(CLIENT_CONFIG_PATH)
     if not path.exists():
-        return {"copilot_permissions": "allow-all-paths"}
+        return {"copilot_permissions": "allow-all-paths", "copilot_enable_mcp": False}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
-            return {"copilot_permissions": "allow-all-paths"}
+            return {"copilot_permissions": "allow-all-paths", "copilot_enable_mcp": False}
         if not data.get("copilot_permissions"):
             data["copilot_permissions"] = "allow-all-paths"
+        if "copilot_enable_mcp" not in data:
+            data["copilot_enable_mcp"] = False
         return data
     except (OSError, json.JSONDecodeError):
-        return {"copilot_permissions": "allow-all-paths"}
+        return {"copilot_permissions": "allow-all-paths", "copilot_enable_mcp": False}
 
 
 def _save_client_config(data):
@@ -1537,7 +1539,7 @@ Previous conversation history from other providers:
     args.extend(["-p", prompt])
     
     mcp_data = _load_mcp_json(config)
-    if mcp_data:
+    if mcp_data and (config.get("copilot_enable_mcp") is True):
         mcp_path = _write_mcp_json_file(mcp_data)
         args.extend(["--additional-mcp-config", f"@{mcp_path}"])
     if extra_args:
@@ -2904,7 +2906,7 @@ Previous conversation history from other providers:
         args.extend(["-p", prompt])
         
         mcp_data = _load_mcp_json(config)
-        if mcp_data:
+        if mcp_data and (config.get("copilot_enable_mcp") is True):
             mcp_path = _write_mcp_json_file(mcp_data)
             args.extend(["--additional-mcp-config", f"@{mcp_path}"])
         if job.extra_args:

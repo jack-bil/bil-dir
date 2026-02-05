@@ -846,8 +846,10 @@
         font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
         font-size: 14px;
         line-height: 1.5;
-        white-space: pre-wrap;
+        white-space: pre;
         color: var(--cli-ink, #e2e8f0);
+        overflow-x: auto;
+        overflow-y: hidden;
       }
       .terminal .line {
         display: block;
@@ -995,6 +997,33 @@
       .msg.assistant a {
         color: var(--accent-2);
         text-decoration: underline;
+      }
+      .msg.assistant table {
+        width: max-content;
+        max-width: 100%;
+        border-collapse: collapse;
+        margin: 10px 0;
+        display: block;
+        overflow-x: auto;
+        background: rgba(11, 15, 22, 0.6);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      .msg.assistant thead {
+        background: #0f141c;
+        font-weight: 600;
+      }
+      .msg.assistant th,
+      .msg.assistant td {
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        text-align: left;
+        vertical-align: top;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+      .msg.assistant tbody tr:nth-child(even) {
+        background: rgba(148, 163, 184, 0.06);
       }
       .msg.status-msg {
         background: #0b0f16;
@@ -2270,6 +2299,7 @@
           if (role === "assistant") {
             div.innerHTML = marked.parse(text);
             div.dataset.raw = text || "";
+            enhanceTables(div);
           } else {
             div.textContent = text;
           }
@@ -2289,6 +2319,53 @@
         }
         const hue = Math.abs(hash) % 360;
         return `hsl(${hue} 70% 70%)`;
+      }
+
+      function enhanceTables(container) {
+        if (!container) return;
+        const blocks = container.querySelectorAll("pre > code");
+        blocks.forEach((code) => {
+          const text = code.textContent || "";
+          if (!text.trim()) return;
+          if (text.includes("|")) return;
+          let lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+          if (lines.length < 2) return;
+          lines = lines.filter((line) => !/^\[\d+\s+rows?\s+x\s+\d+\s+columns\]$/i.test(line));
+          lines = lines.filter((line) => !/^-{2,}$/.test(line));
+          if (lines.length < 2) return;
+          const splitRow = (line) => line.split(/\s{2,}|\t+/).map((cell) => cell.trim()).filter(Boolean);
+          const rows = lines.map(splitRow);
+          const validRows = rows.filter((row) => row.length >= 2);
+          if (validRows.length !== rows.length) return;
+          const colCount = Math.max(...rows.map((row) => row.length));
+          if (colCount < 2) return;
+          const table = document.createElement("table");
+          const thead = document.createElement("thead");
+          const headRow = document.createElement("tr");
+          const headerCells = rows[0];
+          headerCells.forEach((cell) => {
+            const th = document.createElement("th");
+            th.textContent = cell;
+            headRow.appendChild(th);
+          });
+          thead.appendChild(headRow);
+          table.appendChild(thead);
+          const tbody = document.createElement("tbody");
+          rows.slice(1).forEach((row) => {
+            const tr = document.createElement("tr");
+            row.forEach((cell) => {
+              const td = document.createElement("td");
+              td.textContent = cell;
+              tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+          });
+          table.appendChild(tbody);
+          const pre = code.parentElement;
+          if (pre) {
+            pre.replaceWith(table);
+          }
+        });
       }
 
       function addMasterMessage(sessionName, text, skipScroll = false) {
@@ -2312,6 +2389,7 @@
         const next = append ? (prev + text) : text;
         el.dataset.raw = next;
         el.innerHTML = marked.parse(next);
+        enhanceTables(el);
       }
 
       function appendTool(output) {
