@@ -62,6 +62,19 @@
         justify-content: center;
         cursor: pointer;
         font-size: 16px;
+        position: relative;
+      }
+      .icon-btn.has-alert::after {
+        content: "";
+        position: absolute;
+        top: 5px;
+        right: 5px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #f43f5e;
+        border: 1px solid rgba(15, 23, 42, 0.8);
+        box-shadow: 0 0 0 2px rgba(244, 63, 94, 0.2);
       }
       .icon-btn svg {
         width: 18px;
@@ -194,6 +207,44 @@
       .form-group select:focus {
         outline: none;
         border-color: var(--accent);
+      }
+      .form-group textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #0f141c;
+        color: var(--ink);
+        font-size: 14px;
+        font-family: inherit;
+        box-sizing: border-box;
+        resize: vertical;
+        min-height: 80px;
+      }
+      .form-group textarea:focus {
+        outline: none;
+        border-color: var(--accent);
+      }
+      .form-group input[type="time"],
+      .form-group input[type="number"] {
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: #0f141c;
+        color: var(--ink);
+        font-size: 14px;
+      }
+      .checkbox-group {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 14px;
+        color: var(--ink);
       }
       .workdir-row {
         display: flex;
@@ -846,13 +897,15 @@
         font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
         font-size: 14px;
         line-height: 1.5;
-        white-space: pre;
+        white-space: pre-wrap;
         color: var(--cli-ink, #e2e8f0);
-        overflow-x: auto;
+        overflow-x: hidden;
         overflow-y: hidden;
       }
       .terminal .line {
         display: block;
+        word-break: break-word;
+        overflow-wrap: anywhere;
       }
       .terminal .line.activity {
         color: var(--cli-activity, #38bdf8);
@@ -1449,14 +1502,20 @@
       .messages::-webkit-scrollbar,
       .sessions::-webkit-scrollbar,
       .left-col::-webkit-scrollbar,
-      .task-output-content::-webkit-scrollbar {
+      .task-output-content::-webkit-scrollbar,
+      .task-edit-form textarea::-webkit-scrollbar,
+      #taskCommand::-webkit-scrollbar,
+      .task-detail-view::-webkit-scrollbar {
         width: 12px;
         height: 12px;
       }
       .messages::-webkit-scrollbar-track,
       .sessions::-webkit-scrollbar-track,
       .left-col::-webkit-scrollbar-track,
-      .task-output-content::-webkit-scrollbar-track {
+      .task-output-content::-webkit-scrollbar-track,
+      .task-edit-form textarea::-webkit-scrollbar-track,
+      #taskCommand::-webkit-scrollbar-track,
+      .task-detail-view::-webkit-scrollbar-track {
         background: rgba(15, 17, 22, 0.4);
         border-radius: 8px;
         margin: 4px 0;
@@ -1464,7 +1523,10 @@
       .messages::-webkit-scrollbar-thumb,
       .sessions::-webkit-scrollbar-thumb,
       .left-col::-webkit-scrollbar-thumb,
-      .task-output-content::-webkit-scrollbar-thumb {
+      .task-output-content::-webkit-scrollbar-thumb,
+      .task-edit-form textarea::-webkit-scrollbar-thumb,
+      #taskCommand::-webkit-scrollbar-thumb,
+      .task-detail-view::-webkit-scrollbar-thumb {
         background: rgba(71, 85, 105, 0.4);
         border-radius: 8px;
         border: 2px solid rgba(15, 17, 22, 0.5);
@@ -1473,20 +1535,29 @@
       .messages::-webkit-scrollbar-thumb:hover,
       .sessions::-webkit-scrollbar-thumb:hover,
       .left-col::-webkit-scrollbar-thumb:hover,
-      .task-output-content::-webkit-scrollbar-thumb:hover {
+      .task-output-content::-webkit-scrollbar-thumb:hover,
+      .task-edit-form textarea::-webkit-scrollbar-thumb:hover,
+      #taskCommand::-webkit-scrollbar-thumb:hover,
+      .task-detail-view::-webkit-scrollbar-thumb:hover {
         background: rgba(100, 116, 139, 0.6);
         border-color: rgba(15, 17, 22, 0.7);
       }
       .messages::-webkit-scrollbar-thumb:active,
       .sessions::-webkit-scrollbar-thumb:active,
       .left-col::-webkit-scrollbar-thumb:active,
-      .task-output-content::-webkit-scrollbar-thumb:active {
+      .task-output-content::-webkit-scrollbar-thumb:active,
+      .task-edit-form textarea::-webkit-scrollbar-thumb:active,
+      #taskCommand::-webkit-scrollbar-thumb:active,
+      .task-detail-view::-webkit-scrollbar-thumb:active {
         background: rgba(148, 163, 184, 0.7);
       }
       .messages,
       .sessions,
       .left-col,
-      .task-output-content {
+      .task-output-content,
+      .task-edit-form textarea,
+      #taskCommand,
+      .task-detail-view {
         scrollbar-width: thin;
         scrollbar-color: rgba(71, 85, 105, 0.4) rgba(15, 17, 22, 0.4);
       }
@@ -1530,7 +1601,7 @@
               <path d="M8.5 12h7M12 8.5v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
             </svg>
           </a>
-          <a class="icon-btn" href="/config" aria-label="Config" title="Config">
+          <a class="icon-btn {% if gmail_status and not gmail_status.authenticated %}has-alert{% endif %}" href="/config" aria-label="Config" title="Config">
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <path d="M11.5 2.5h1l.6 2.6c.6.1 1.2.3 1.7.6l2.2-1.5.7.7-1.5 2.2c.3.5.5 1.1.6 1.7l2.6.6v1l-2.6.6c-.1.6-.3 1.2-.6 1.7l1.5 2.2-.7.7-2.2-1.5c-.5.3-1.1.5-1.7.6l-.6 2.6h-1l-.6-2.6c-.6-.1-1.2-.3-1.7-.6l-2.2 1.5-.7-.7 1.5-2.2c-.3-.5-.5-1.1-.6-1.7l-2.6-.6v-1l2.6-.6c.1-.6.3-1.2.6-1.7L5 4.6l.7-.7 2.2 1.5c.5-.3 1.1-.5 1.7-.6l.6-2.6Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
               <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/>
@@ -1642,6 +1713,70 @@
         </div>
       </form>
     </div>
+    <div class="modal-overlay" id="addTaskOverlay"></div>
+    <div class="modal" id="addTaskModal" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title">New Task</div>
+        <button class="copy-btn" id="addTaskCloseBtn" aria-label="Close">✕</button>
+      </div>
+      <form id="addTaskForm">
+        <div class="form-group">
+          <label for="modalTaskName">Task Name</label>
+          <input type="text" id="modalTaskName" placeholder="Enter task name" required autocomplete="off" />
+        </div>
+        <div class="form-group">
+          <label for="modalTaskPrompt">Prompt</label>
+          <textarea id="modalTaskPrompt" placeholder="Enter the prompt for this task" rows="4" required></textarea>
+        </div>
+        <div class="form-group">
+          <label for="modalTaskProvider">Provider</label>
+          <select id="modalTaskProvider">
+            <option value="codex">codex</option>
+            <option value="copilot">copilot</option>
+            <option value="gemini">gemini</option>
+            <option value="claude">claude</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="modalTaskScheduleType">Schedule Type</label>
+          <select id="modalTaskScheduleType">
+            <option value="manual">Manual</option>
+            <option value="interval">Interval (minutes)</option>
+            <option value="daily">Daily</option>
+            <option value="weekly">Weekly</option>
+            <option value="once">Once</option>
+          </select>
+        </div>
+        <div class="form-group" id="modalTaskIntervalRow" style="display:none;">
+          <label for="modalTaskInterval">Every</label>
+          <div class="row">
+            <input type="number" id="modalTaskInterval" min="1" value="60" style="width:120px;" />
+            <span class="muted">minutes</span>
+          </div>
+        </div>
+        <div class="form-group" id="modalTaskTimeRow" style="display:none;">
+          <label for="modalTaskTime">Time</label>
+          <input type="time" id="modalTaskTime" />
+          <div class="muted">Local time</div>
+        </div>
+        <div class="form-group" id="modalTaskDaysRow" style="display:none;">
+          <label>Days</label>
+          <div class="checkbox-group">
+            <label class="checkbox-row"><input type="checkbox" value="Mon" class="modal-task-day" /> Mon</label>
+            <label class="checkbox-row"><input type="checkbox" value="Tue" class="modal-task-day" /> Tue</label>
+            <label class="checkbox-row"><input type="checkbox" value="Wed" class="modal-task-day" /> Wed</label>
+            <label class="checkbox-row"><input type="checkbox" value="Thu" class="modal-task-day" /> Thu</label>
+            <label class="checkbox-row"><input type="checkbox" value="Fri" class="modal-task-day" /> Fri</label>
+            <label class="checkbox-row"><input type="checkbox" value="Sat" class="modal-task-day" /> Sat</label>
+            <label class="checkbox-row"><input type="checkbox" value="Sun" class="modal-task-day" /> Sun</label>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn-secondary" id="addTaskModalCancelBtn">Cancel</button>
+          <button type="submit" class="btn-primary">Create Task</button>
+        </div>
+      </form>
+    </div>
     <main>
       <div class="left-col">
         <div class="panel search-panel" id="searchPanel">
@@ -1704,57 +1839,6 @@
           <ul class="tasks-list" id="tasksList">
             <li class="muted">No tasks yet.</li>
           </ul>
-          <div class="task-form" id="taskForm">
-            <div class="row">
-              <label for="taskName">Task name</label>
-              <input id="taskName" type="text" />
-            </div>
-            <div>
-              <label for="taskPrompt">Prompt</label>
-              <textarea id="taskPrompt" placeholder="Single prompt to run"></textarea>
-            </div>
-            <div class="row">
-              <label for="taskProvider">Model</label>
-              <select id="taskProvider">
-                <option value="codex">codex</option>
-                <option value="copilot">copilot</option>
-                <option value="gemini">gemini</option>
-                <option value="claude">claude</option>
-              </select>
-              <label for="taskScheduleTypeOld">Schedule</label>
-              <select id="taskScheduleTypeOld">
-                <option value="manual">Manual</option>
-                <option value="interval">Interval (minutes)</option>
-                <option value="daily">Daily</option>
-                <option value="weekly">Weekly</option>
-                <option value="once">Once</option>
-              </select>
-            </div>
-            <div class="row" id="taskIntervalRow">
-              <label for="taskInterval">Every</label>
-              <input id="taskInterval" type="number" min="1" value="60" style="width:120px;" />
-              <span class="muted">minutes</span>
-            </div>
-            <div class="row" id="taskTimeRow">
-              <label for="taskTime">Time</label>
-              <input id="taskTime" type="time" />
-              <div class="muted">Local time</div>
-            </div>
-            <div class="row" id="taskDaysRow">
-              <label>Days</label>
-              <label><input type="checkbox" value="Mon" class="task-day" /> Mon</label>
-              <label><input type="checkbox" value="Tue" class="task-day" /> Tue</label>
-              <label><input type="checkbox" value="Wed" class="task-day" /> Wed</label>
-              <label><input type="checkbox" value="Thu" class="task-day" /> Thu</label>
-              <label><input type="checkbox" value="Fri" class="task-day" /> Fri</label>
-              <label><input type="checkbox" value="Sat" class="task-day" /> Sat</label>
-              <label><input type="checkbox" value="Sun" class="task-day" /> Sun</label>
-            </div>
-            <div class="row">
-              <button type="button" id="saveTaskBtn">Save task</button>
-              <button type="button" class="cancel-btn" id="cancelTaskBtn">Cancel</button>
-            </div>
-          </div>
         </div>
         <div class="section-header" style="margin-top:12px;">
           <button class="section-toggle" id="orchToggle" type="button" aria-expanded="true">
@@ -1776,10 +1860,19 @@
           <div class="task-header">
             <h2>{{ selected_task.name }}</h2>
             <div class="task-header-actions">
+              {% if task_mentions_gmail and gmail_status and not gmail_status.authenticated %}
+              <button class="icon-btn" id="reauthGmailBtn" title="Re-auth Gmail">📧</button>
+              {% endif %}
               <button class="icon-btn" id="runTaskBtn" title="Run Now">▶</button>
               <button class="icon-btn" id="deleteTaskBtn" title="Delete Task">🗑</button>
             </div>
           </div>
+          {% if task_mentions_gmail and gmail_status and not gmail_status.authenticated %}
+          <div class="muted" style="margin-bottom:10px;">
+            If Gmail still shows not connected after auth, revoke Google access and try again:
+            <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Open Google Permissions</a>
+          </div>
+          {% endif %}
           <form id="taskEditForm" class="task-edit-form">
             <div>
               <label for="taskName">Task Name</label>
@@ -2047,6 +2140,8 @@
       const orchBody = document.getElementById("orchBody");
       const navSearch = document.getElementById("navSearch");
       const searchPanel = document.getElementById("searchPanel");
+      const NAV_SCROLL_KEY = "navScrollTop";
+      let pendingNavScroll = null;
       const orchestratorsList = document.getElementById("orchestratorsList");
       const addOrchBtn = document.getElementById("addOrchBtn");
       const addOrchOverlay = document.getElementById("addOrchOverlay");
@@ -2060,18 +2155,20 @@
       const orchSessionList = document.getElementById("orchSessionList");
       const orchEnabledInput = document.getElementById("orchEnabled");
       const addTaskBtn = document.getElementById("addTaskBtn");
-      const taskForm = document.getElementById("taskForm");
-      const taskNameInput = document.getElementById("taskName");
-      const taskPromptInput = document.getElementById("taskPrompt");
-      const taskProviderSelect = document.getElementById("taskProvider");
-      const taskScheduleType = document.getElementById("taskScheduleTypeOld");
-      const taskIntervalRow = document.getElementById("taskIntervalRow");
-      const taskIntervalInput = document.getElementById("taskInterval");
-      const taskTimeRow = document.getElementById("taskTimeRow");
-      const taskTimeInput = document.getElementById("taskTime");
-      const taskDaysRow = document.getElementById("taskDaysRow");
-      const saveTaskBtn = document.getElementById("saveTaskBtn");
-      const cancelTaskBtn = document.getElementById("cancelTaskBtn");
+      const addTaskOverlay = document.getElementById("addTaskOverlay");
+      const addTaskModal = document.getElementById("addTaskModal");
+      const addTaskForm = document.getElementById("addTaskForm");
+      const addTaskCloseBtn = document.getElementById("addTaskCloseBtn");
+      const addTaskModalCancelBtn = document.getElementById("addTaskModalCancelBtn");
+      const modalTaskNameInput = document.getElementById("modalTaskName");
+      const modalTaskPromptInput = document.getElementById("modalTaskPrompt");
+      const modalTaskProviderSelect = document.getElementById("modalTaskProvider");
+      const modalTaskScheduleType = document.getElementById("modalTaskScheduleType");
+      const modalTaskIntervalRow = document.getElementById("modalTaskIntervalRow");
+      const modalTaskIntervalInput = document.getElementById("modalTaskInterval");
+      const modalTaskTimeRow = document.getElementById("modalTaskTimeRow");
+      const modalTaskTimeInput = document.getElementById("modalTaskTime");
+      const modalTaskDaysRow = document.getElementById("modalTaskDaysRow");
       let editingTaskId = null;
       let taskCache = {};
       let orchCache = {};
@@ -2088,6 +2185,40 @@
       const selectedOrchId = "{{ selected_orchestrator.id if selected_orchestrator else '' }}";
       const providerModels = {{ provider_models|tojson }};
       const initialOrchestrators = {{ orchestrators|tojson }};
+      consumeNavScroll();
+      requestAnimationFrame(() => applyPendingNavScroll());
+      setTimeout(() => applyPendingNavScroll(), 250);
+
+      function getNavPanel() {
+        return document.querySelector(".sessions");
+      }
+
+      function storeNavScroll() {
+        const panel = getNavPanel();
+        if (!panel) return;
+        localStorage.setItem(NAV_SCROLL_KEY, String(panel.scrollTop));
+      }
+
+      function consumeNavScroll() {
+        const raw = localStorage.getItem(NAV_SCROLL_KEY);
+        if (raw == null) return null;
+        const value = parseInt(raw, 10);
+        if (Number.isNaN(value)) return null;
+        pendingNavScroll = value;
+        return pendingNavScroll;
+      }
+
+      function applyPendingNavScroll() {
+        const panel = getNavPanel();
+        if (!panel || pendingNavScroll == null) return;
+        const maxScroll = Math.max(0, panel.scrollHeight - panel.clientHeight);
+        if (pendingNavScroll <= maxScroll) {
+          panel.scrollTop = pendingNavScroll;
+          pendingNavScroll = null;
+        } else {
+          panel.scrollTop = maxScroll;
+        }
+      }
 
       // Show empty state if no session selected
       const emptyState = document.getElementById("emptyState");
@@ -2238,9 +2369,25 @@
         return pre;
       }
 
+      function ensureActivityBody(container) {
+        let details = container.querySelector("details.tools");
+        if (!details) {
+          details = document.createElement("details");
+          details.className = "tools";
+          const summary = document.createElement("summary");
+          summary.textContent = "Activity";
+          details.appendChild(summary);
+          const pre = document.createElement("pre");
+          pre.className = "output";
+          details.appendChild(pre);
+          container.appendChild(details);
+        }
+        return details.querySelector("pre");
+      }
+
       function appendTerminalBlock(container, text, kind = "agent", autoScroll = true) {
         if (!container || !text) return;
-        const pre = ensureTerminalBody(container);
+        const pre = (cliMode && kind === "activity") ? ensureActivityBody(container) : ensureTerminalBody(container);
         let inCodeBlock = container.dataset.codeBlock === "true";
         const prefix = container.dataset.masterPrefix || "";
         const hasPrefix = masterMode && prefix && container.dataset.masterStarted !== "true";
@@ -2403,7 +2550,7 @@
           tools.id = "toolsPanel";
           tools.className = "tools";
           const summary = document.createElement("summary");
-          summary.textContent = "Tool output";
+          summary.textContent = "Activity";
           tools.appendChild(summary);
           const pre = document.createElement("pre");
           pre.className = "output";
@@ -2464,7 +2611,14 @@
             }
           });
         }
+        collapseActivityPanels();
         scrollToBottom();
+      }
+
+      function collapseActivityPanels() {
+        document.querySelectorAll("details.tools").forEach((panel) => {
+          panel.open = false;
+        });
       }
 
       renderHistory();
@@ -2639,45 +2793,58 @@
       wireSectionToggle(tasksToggle, tasksBody);
       wireSectionToggle(orchToggle, orchBody);
 
-      function updateTaskScheduleFields() {
-        const type = taskScheduleType ? taskScheduleType.value : "manual";
-        if (taskIntervalRow) taskIntervalRow.style.display = type === "interval" ? "flex" : "none";
-        if (taskTimeRow) taskTimeRow.style.display = type === "daily" || type === "weekly" || type === "once" ? "flex" : "none";
-        if (taskDaysRow) taskDaysRow.style.display = type === "weekly" ? "flex" : "none";
+      // Task Modal Functions
+      function updateModalTaskScheduleFields() {
+        const type = modalTaskScheduleType ? modalTaskScheduleType.value : "manual";
+        if (modalTaskIntervalRow) modalTaskIntervalRow.style.display = type === "interval" ? "block" : "none";
+        if (modalTaskTimeRow) modalTaskTimeRow.style.display = type === "daily" || type === "weekly" || type === "once" ? "block" : "none";
+        if (modalTaskDaysRow) modalTaskDaysRow.style.display = type === "weekly" ? "block" : "none";
       }
 
-      function resetTaskForm() {
-        if (taskNameInput) taskNameInput.value = "";
-        if (taskPromptInput) taskPromptInput.value = "";
-        if (taskProviderSelect) taskProviderSelect.value = "codex";
-        if (taskScheduleType) taskScheduleType.value = "manual";
-        if (taskIntervalInput) taskIntervalInput.value = "60";
-        if (taskTimeInput) taskTimeInput.value = "";
-        document.querySelectorAll(".task-day").forEach((el) => {
+      function resetModalTaskForm() {
+        if (modalTaskNameInput) modalTaskNameInput.value = "";
+        if (modalTaskPromptInput) modalTaskPromptInput.value = "";
+        if (modalTaskProviderSelect) modalTaskProviderSelect.value = "codex";
+        if (modalTaskScheduleType) modalTaskScheduleType.value = "manual";
+        if (modalTaskIntervalInput) modalTaskIntervalInput.value = "60";
+        if (modalTaskTimeInput) modalTaskTimeInput.value = "";
+        document.querySelectorAll(".modal-task-day").forEach((el) => {
           el.checked = false;
         });
-        updateTaskScheduleFields();
+        updateModalTaskScheduleFields();
         editingTaskId = null;
       }
 
-      if (taskScheduleType) {
-        taskScheduleType.addEventListener("change", updateTaskScheduleFields);
+      function openAddTaskModal() {
+        if (addTaskOverlay) addTaskOverlay.classList.add("open");
+        if (addTaskModal) addTaskModal.classList.add("open");
+        resetModalTaskForm();
       }
 
-      if (addTaskBtn && taskForm) {
-        addTaskBtn.addEventListener("click", () => {
-          taskForm.classList.toggle("active");
-          if (taskForm.classList.contains("active")) {
-            updateTaskScheduleFields();
-          }
-        });
+      function closeAddTaskModal() {
+        if (addTaskOverlay) addTaskOverlay.classList.remove("open");
+        if (addTaskModal) addTaskModal.classList.remove("open");
+        resetModalTaskForm();
       }
 
-      if (cancelTaskBtn && taskForm) {
-        cancelTaskBtn.addEventListener("click", () => {
-          taskForm.classList.remove("active");
-          resetTaskForm();
-        });
+      if (modalTaskScheduleType) {
+        modalTaskScheduleType.addEventListener("change", updateModalTaskScheduleFields);
+      }
+
+      if (addTaskBtn) {
+        addTaskBtn.addEventListener("click", openAddTaskModal);
+      }
+
+      if (addTaskCloseBtn) {
+        addTaskCloseBtn.addEventListener("click", closeAddTaskModal);
+      }
+
+      if (addTaskModalCancelBtn) {
+        addTaskModalCancelBtn.addEventListener("click", closeAddTaskModal);
+      }
+
+      if (addTaskOverlay) {
+        addTaskOverlay.addEventListener("click", closeAddTaskModal);
       }
 
       function handleEventLine(line, current, activityPanel) {
@@ -2862,6 +3029,7 @@
                   chunkEvent = line.replace("event:", "").trim();
                   if (chunkEvent === "done") {
                     setWorking(false);
+                    collapseActivityPanels();
                     if (sessionName) {
                       applyStatus(sessionName, "idle");
                       updateProviderSelectState();
@@ -2877,6 +3045,7 @@
                     } else if (sessionName) {
                       addMasterMessage(sessionName, "Error.");
                     }
+                    collapseActivityPanels();
                     if (sessionName) {
                       applyStatus(sessionName, "idle");
                       updateProviderSelectState();
@@ -3279,6 +3448,7 @@
             card.style.pointerEvents = "none";
             
             // Navigate to the session
+            storeNavScroll();
             window.location.href = href;
           });
         });
@@ -3763,59 +3933,61 @@
         });
       }
 
-      async function saveTask() {
-        const name = (taskNameInput && taskNameInput.value ? taskNameInput.value.trim() : "");
-        const prompt = (taskPromptInput && taskPromptInput.value ? taskPromptInput.value.trim() : "");
-        if (!name || !prompt) {
-          alert("Task name and prompt are required.");
-          return;
-        }
-        const scheduleType = taskScheduleType ? taskScheduleType.value : "manual";
-        const schedule = { type: scheduleType };
-        if (scheduleType === "interval") {
-          schedule.minutes = parseInt(taskIntervalInput.value || "60", 10);
-        } else if (scheduleType === "daily" || scheduleType === "weekly" || scheduleType === "once") {
-          schedule.time = taskTimeInput.value || "";
-        }
-        if (scheduleType === "weekly") {
-          const days = [];
-          document.querySelectorAll(".task-day").forEach((el) => {
-            if (el.checked) days.push(el.value);
-          });
-          schedule.days = days;
-        }
-        const body = {
-          name,
-          prompt,
-          provider: taskProviderSelect ? taskProviderSelect.value : "codex",
-          schedule,
-          enabled: editingTaskId && taskCache[editingTaskId] ? !!taskCache[editingTaskId].enabled : true,
-        };
-        let resp;
-        if (editingTaskId) {
-          resp = await fetch(`/tasks/${encodeURIComponent(editingTaskId)}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
-          });
-        } else {
-          resp = await fetch("/tasks", {
+      // Task Modal Form Submit
+      if (addTaskForm) {
+        addTaskForm.addEventListener("submit", async (e) => {
+          e.preventDefault();
+
+          const name = modalTaskNameInput ? modalTaskNameInput.value.trim() : "";
+          const prompt = modalTaskPromptInput ? modalTaskPromptInput.value.trim() : "";
+
+          if (!name || !prompt) {
+            alert("Task name and prompt are required.");
+            return;
+          }
+
+          const scheduleType = modalTaskScheduleType ? modalTaskScheduleType.value : "manual";
+          const schedule = { type: scheduleType };
+
+          if (scheduleType === "interval") {
+            schedule.minutes = parseInt(modalTaskIntervalInput.value || "60", 10);
+          } else if (scheduleType === "daily" || scheduleType === "weekly" || scheduleType === "once") {
+            schedule.time = modalTaskTimeInput.value || "";
+          }
+
+          if (scheduleType === "weekly") {
+            const days = [];
+            document.querySelectorAll(".modal-task-day").forEach((el) => {
+              if (el.checked) days.push(el.value);
+            });
+            schedule.days = days;
+          }
+
+          const body = {
+            name,
+            prompt,
+            provider: modalTaskProviderSelect ? modalTaskProviderSelect.value : "codex",
+            schedule,
+            enabled: true,
+          };
+
+          const resp = await fetch("/tasks", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });
-        }
-        if (!resp.ok) {
-          const data = await resp.json().catch(() => ({}));
-          alert(data.error || "Failed to create task");
-          return;
-        }
-        taskForm.classList.remove("active");
-        resetTaskForm();
-      }
 
-      if (saveTaskBtn) {
-        saveTaskBtn.addEventListener("click", saveTask);
+          if (!resp.ok) {
+            const data = await resp.json().catch(() => ({}));
+            alert(data.error || "Failed to create task");
+            return;
+          }
+
+          // Close modal and reset form on success
+          closeAddTaskModal();
+
+          // Task list will update via SSE
+        });
       }
 
       function renderTasks(tasks) {
@@ -3875,6 +4047,7 @@
         if (sessionsPanel) {
           sessionsPanel.scrollTop = prevScroll;
         }
+        applyPendingNavScroll();
       }
 
       function renderOrchestrators(orchestrators) {
@@ -3932,6 +4105,7 @@
         if (sessionsPanel) {
           sessionsPanel.scrollTop = prevScroll;
         }
+        applyPendingNavScroll();
       }
 
       async function refreshOrchestrators() {
@@ -3991,6 +4165,7 @@
           if (!card) return;
           const orchId = card.getAttribute("data-orch-id");
           if (!orchId) return;
+          storeNavScroll();
           window.location.href = `/orchestrator/${encodeURIComponent(orchId)}`;
         });
       }
@@ -4035,6 +4210,7 @@
       if (document.getElementById("taskEditForm")) {
         const taskEditForm = document.getElementById("taskEditForm");
         const runTaskBtn = document.getElementById("runTaskBtn");
+        const reauthGmailBtn = document.getElementById("reauthGmailBtn");
         const deleteTaskBtn = document.getElementById("deleteTaskBtn");
         const cancelTaskEdit = document.getElementById("cancelTaskEdit");
         const taskEditScheduleType = document.getElementById("taskScheduleType");
@@ -4180,6 +4356,23 @@
           } catch (err) {
             console.error("Failed to run task:", err);
             alert("Failed to run task");
+          }
+        });
+      }
+
+      if (reauthGmailBtn) {
+        reauthGmailBtn.addEventListener("click", async () => {
+          if (!confirm("Fix Gmail auth now? This will re-run Google consent.")) return;
+          try {
+            const resp = await fetch("/gmail/reauth", { method: "POST" });
+            if (!resp.ok) {
+              const data = await resp.json().catch(() => ({}));
+              alert(data.error || "Failed to start Gmail re-auth");
+              return;
+            }
+            alert("Gmail auth started. Check the terminal for the auth link.");
+          } catch (err) {
+            alert("Failed to start Gmail re-auth");
           }
         });
       }
@@ -4578,6 +4771,16 @@
         if (sessionsPanel) {
           sessionsPanel.scrollTop = prevScroll;
         }
+        applyPendingNavScroll();
+      }
+
+      if (tasksList) {
+        tasksList.addEventListener("click", (e) => {
+          if (e.target.closest(".task-menu")) return;
+          const card = e.target.closest(".task-card");
+          if (!card) return;
+          storeNavScroll();
+        });
       }
 
       async function refreshSessionStatus() {

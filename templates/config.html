@@ -70,6 +70,11 @@
         background: #121827;
         border-color: rgba(147, 197, 253, 0.5);
       }
+      .tab-btn.alert {
+        color: #fecdd3;
+        border-color: rgba(244, 63, 94, 0.6);
+        box-shadow: inset 0 -2px 0 rgba(244, 63, 94, 0.5);
+      }
       .tab-panel { display: none; }
       .tab-panel.active { display: block; }
       label {
@@ -109,6 +114,35 @@
         cursor: pointer;
         font-size: 16px;
         text-decoration: none;
+      }
+      .gmail-status {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        background: rgba(15, 23, 42, 0.6);
+        margin-bottom: 12px;
+      }
+      .status-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .status-badge.ok {
+        background: rgba(34, 197, 94, 0.2);
+        color: #86efac;
+        border: 1px solid rgba(34, 197, 94, 0.4);
+      }
+      .status-badge.warn {
+        background: rgba(251, 191, 36, 0.2);
+        color: #fde68a;
+        border: 1px solid rgba(251, 191, 36, 0.4);
       }
       button {
         padding: 10px 16px;
@@ -221,7 +255,8 @@
           <div class="tabs" role="tablist">
             <button type="button" class="tab-btn active" data-tab="general">General</button>
             <button type="button" class="tab-btn" data-tab="permissions">Permissions</button>
-            <button type="button" class="tab-btn" data-tab="mcp">MCP</button>
+            <button type="button" class="tab-btn" data-tab="orchestrator">Orchestrator</button>
+            <button type="button" class="tab-btn {% if gmail_status and not gmail_status.authenticated %}alert{% endif %}" data-tab="mcp">MCP</button>
           </div>
 
           <div class="tab-panel active" id="tab-general">
@@ -329,8 +364,39 @@
             </div>
           </div>
 
+          <div class="tab-panel" id="tab-orchestrator">
+            <h3>Orchestrator Base Prompt</h3>
+            <div class="muted">This prompt guides the orchestrator’s manager behavior and runs in the background.</div>
+            <label for="orch_base_prompt">Base prompt</label>
+            <textarea id="orch_base_prompt" name="orch_base_prompt" rows="8" data-default-prompt="{{ orch_default_prompt|e }}">{{ orch_base_prompt|e }}</textarea>
+            <div class="row" style="margin-top:8px;">
+              <button type="button" class="icon-btn" id="orchResetBtn" title="Reset to default">↺</button>
+              <div class="muted">Reset to the default manager prompt.</div>
+            </div>
+          </div>
+
           <div class="tab-panel" id="tab-mcp">
             <h3>MCP (Codex + Copilot)</h3>
+            <div class="gmail-status">
+              <div>
+                <strong>Gmail Status</strong>
+                <div class="muted">{{ gmail_status.message if gmail_status else "Unknown" }}</div>
+                {% if gmail_status and not gmail_status.authenticated %}
+                <div class="muted" style="margin-top:6px;">
+                  If this keeps showing after re-auth, revoke Google access and try again.
+                  <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">Open Google Permissions</a>
+                </div>
+                {% endif %}
+              </div>
+              <div class="row" style="margin-left:auto;">
+                {% if gmail_status and gmail_status.authenticated %}
+                <span class="status-badge ok">Connected</span>
+                {% else %}
+                <span class="status-badge warn">Not connected</span>
+                <button type="button" class="icon-btn" id="reauthGmailConfigBtn" title="Fix Gmail Auth">📧</button>
+                {% endif %}
+              </div>
+            </div>
             <label for="mcp_json">MCP JSON</label>
             <div class="subtle">Quick add common MCPs (adds to JSON below).</div>
             <div class="chip-grid" id="mcpQuickAdd"></div>
@@ -555,6 +621,24 @@
         });
       }
 
+      const reauthGmailConfigBtn = document.getElementById("reauthGmailConfigBtn");
+      if (reauthGmailConfigBtn) {
+        reauthGmailConfigBtn.addEventListener("click", async () => {
+          if (!confirm("Fix Gmail auth now? This will re-run Google consent.")) return;
+          try {
+            const resp = await fetch("/gmail/reauth", { method: "POST" });
+            if (!resp.ok) {
+              const data = await resp.json().catch(() => ({}));
+              alert(data.error || "Failed to start Gmail re-auth");
+              return;
+            }
+            alert("Gmail auth started. Check the terminal for the auth link.");
+          } catch (err) {
+            alert("Failed to start Gmail re-auth");
+          }
+        });
+      }
+
       function activateTab(target) {
         document.querySelectorAll(".tab-btn").forEach((btn) => {
           const isActive = btn.getAttribute("data-tab") === target;
@@ -580,6 +664,16 @@
           } catch (err) {
             // ignore
           }
+        });
+      }
+
+      const orchResetBtn = document.getElementById("orchResetBtn");
+      if (orchResetBtn) {
+        orchResetBtn.addEventListener("click", () => {
+          const area = document.getElementById("orch_base_prompt");
+          if (!area) return;
+          const defVal = area.getAttribute("data-default-prompt") || "";
+          area.value = defVal;
         });
       }
 

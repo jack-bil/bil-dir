@@ -46,6 +46,11 @@ ORCH_STORE_PATH = os.environ.get("BILDIR_ORCH_STORE", os.path.join(DEFAULT_CWD, 
 CONTEXT_DIR = os.path.join(DEFAULT_CWD, "context")
 DEFAULT_PROVIDER = "codex"
 SUPPORTED_PROVIDERS = {"codex", "copilot", "gemini", "claude"}
+DEFAULT_ORCH_BASE_PROMPT = (
+    "Act as the manager across any task type. Use the goal and context below to decide the next best action. "
+    "If markdown files exist in the working directory, review them for context. "
+    "Always do the next concrete step toward completion: decide, execute, then report."
+)
 _SESSION_LOCK = threading.RLock()
 _JOB_LOCK = threading.Lock()
 _TASK_LOCK = threading.RLock()
@@ -78,9 +83,15 @@ def _run_codex_exec(
     json_events=True,
     context_briefing=None,
 ):
+    """Execute codex with stdin support for multi-line prompts.
+
+    This function uses subprocess.Popen with stdin pipe to support multi-line prompts.
+    Previously used subprocess.run with prompt as command-line arg, which failed for
+    multi-line prompts and caused tasks to hang indefinitely.
+    """
     if not prompt or not isinstance(prompt, str):
         raise ValueError("prompt must be a non-empty string")
-    
+
     # Inject context briefing if provided and not resuming
     if context_briefing and not resume_session_id and not resume_last:
         logger.info(f"[Context] Injecting {len(context_briefing)} chars of context into codex prompt")
@@ -95,7 +106,7 @@ Previous conversation history from other providers:
 # Current Request
 
 {prompt}"""
-    
+
     codex_path = _resolve_codex_path()
     if not codex_path:
         raise FileNotFoundError("codex CLI not found (set CODEX_PATH or add to PATH)")
@@ -116,16 +127,35 @@ Previous conversation history from other providers:
             args.append(resume_session_id)
         else:
             args.append("--last")
-    args.append(prompt)
-    proc = subprocess.run(
+
+    # Use stdin for multi-line prompt support (NOT command-line arg)
+    proc = subprocess.Popen(
         args,
         cwd=cwd,
-        capture_output=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
-        timeout=timeout_sec,
     )
-    return proc, args
+
+    try:
+        # Write prompt to stdin and get output with timeout
+        stdout, stderr = proc.communicate(input=prompt + '\n', timeout=timeout_sec)
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        returncode = -1
+
+    # Return mock subprocess.CompletedProcess-like object for API compatibility
+    class ProcResult:
+        def __init__(self, returncode, stdout, stderr):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    return ProcResult(returncode, stdout, stderr), args
 
 
 def _resolve_codex_path():
@@ -141,6 +171,20 @@ def _resolve_gemini_path(config):
 
 def _resolve_claude_path(config):
     return config.get("claude_path") or shutil.which("claude") or shutil.which("claude.cmd")
+
+def _resolve_npx_path():
+    candidates = [
+        shutil.which("npx"),
+        shutil.which("npx.cmd"),
+        r"C:\Program Files\nodejs\npx.cmd",
+        r"C:\Program Files\nodejs\npx",
+        os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm", "npx.cmd"),
+        os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm", "npx"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            return candidate
+    return None
 
 
 def _provider_path_status(config):
@@ -197,6 +241,12 @@ def _get_provider_model_info():
 def _get_provider_config():
     return _load_client_config()
 
+def _get_orchestrator_base_prompt(config):
+    if not isinstance(config, dict):
+        return DEFAULT_ORCH_BASE_PROMPT
+    base = (config.get("orch_base_prompt") or "").strip()
+    return base or DEFAULT_ORCH_BASE_PROMPT
+
 def _full_permissions_enabled(config, provider=None):
     if not isinstance(config, dict):
         return True
@@ -233,6 +283,144 @@ def _load_mcp_json(config):
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid MCP JSON: {exc}") from exc
+
+
+def _get_gmail_status_message(reason):
+    if reason == "missing_credentials":
+        return "Gmail credentials not found"
+    if reason == "missing_refresh_token":
+        return "Missing refresh token - authentication required"
+    if reason == "invalid_credentials":
+        return "Invalid Gmail credentials file"
+    if reason == "read_error":
+        return "Unable to read Gmail credentials"
+    return "Authenticated"
+
+
+def _gmail_auth_status():
+    creds_path = pathlib.Path.home() / ".gmail-mcp" / "credentials.json"
+    if not creds_path.exists():
+        reason = "missing_credentials"
+        return {
+            "authenticated": False,
+            "status": "warning",
+            "reason": reason,
+            "message": _get_gmail_status_message(reason),
+        }
+    try:
+        data = json.loads(creds_path.read_text(encoding="utf-8"))
+    except Exception:
+        reason = "invalid_credentials"
+        return {
+            "authenticated": False,
+            "status": "warning",
+            "reason": reason,
+            "message": _get_gmail_status_message(reason),
+        }
+    refresh_token = data.get("refresh_token") if isinstance(data, dict) else None
+    if refresh_token:
+        return {
+            "authenticated": True,
+            "status": "healthy",
+            "reason": None,
+            "message": _get_gmail_status_message(None),
+        }
+    reason = "missing_refresh_token"
+    return {
+        "authenticated": False,
+        "status": "warning",
+        "reason": reason,
+        "message": _get_gmail_status_message(reason),
+    }
+
+
+def _get_mcp_servers_status():
+    path = pathlib.Path(MCP_JSON_PATH)
+    if not path.exists():
+        return {"status": "warning", "message": "No MCP config found", "servers": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {"status": "error", "message": "Invalid MCP config JSON", "servers": []}
+    servers = _get_mcp_servers(data)
+    if not servers:
+        return {"status": "warning", "message": "No MCP servers configured", "servers": []}
+    items = []
+    for name, server in servers.items():
+        command = ""
+        enabled = True
+        if isinstance(server, dict):
+            command = (server.get("command") or "").strip()
+            enabled = bool(server.get("enabled", True))
+        items.append(
+            {
+                "name": name,
+                "command": command,
+                "enabled": enabled,
+                "status": "configured" if enabled else "disabled",
+            }
+        )
+    return {"status": "healthy", "message": f"{len(items)} server(s) configured", "servers": items}
+
+
+def _get_tasks_health_status():
+    tasks = _load_tasks()
+    total = len(tasks)
+    enabled = 0
+    running = 0
+    errors = 0
+    items = []
+    for task in tasks.values():
+        if task.get("enabled"):
+            enabled += 1
+        if task.get("last_status") == "running":
+            running += 1
+        if task.get("last_error") or task.get("last_status") == "error":
+            errors += 1
+        items.append(
+            {
+                "id": task.get("id"),
+                "name": task.get("name"),
+                "enabled": bool(task.get("enabled")),
+                "last_error": task.get("last_error"),
+            }
+        )
+    if errors > 0:
+        status = "error"
+    elif total == 0:
+        status = "info"
+    elif enabled == 0:
+        status = "warning"
+    else:
+        status = "healthy"
+    return {
+        "status": status,
+        "message": f"{enabled} enabled, {running} running",
+        "total": total,
+        "enabled": enabled,
+        "running": running,
+        "errors": errors,
+        "tasks": items,
+    }
+
+
+def _get_sessions_health_status():
+    sessions = _load_sessions()
+    total = len(sessions)
+    active_items = []
+    for name in sessions:
+        status = _get_session_status(name)
+        if status and status != "idle":
+            active_items.append({"name": name, "status": status})
+    active = len(active_items)
+    status = "healthy" if active > 0 else "info"
+    return {
+        "status": status,
+        "message": f"{active} active session(s)",
+        "total": total,
+        "active": active,
+        "sessions": active_items,
+    }
 
 
 def _write_mcp_json_file(mcp_data):
@@ -604,6 +792,45 @@ def _get_latest_assistant_message(session_name):
     return ""
 
 
+def _format_recent_history(session_name, limit=5):
+    history = _get_history_for_name(session_name)
+    messages = history.get("messages") or []
+    if not messages:
+        return ""
+    recent = messages[-limit:]
+    lines = []
+    for msg in recent:
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role") or "assistant"
+        text = (msg.get("text") or "").strip()
+        if not text:
+            continue
+        lines.append(f"{role}: {text}")
+    return "\n".join(lines).strip()
+
+
+def _infer_worker_role(goal):
+    text = (goal or "").lower()
+    if any(k in text for k in ["test", "qa", "verify", "validation"]):
+        return "tester"
+    if any(k in text for k in ["research", "investigate", "find", "analyze", "compare"]):
+        return "researcher"
+    if any(k in text for k in ["design", "ui", "ux", "layout", "style"]):
+        return "designer"
+    if any(k in text for k in ["write", "draft", "document", "doc", "spec"]):
+        return "writer"
+    return "developer"
+
+
+def _build_worker_kickoff_prompt(goal, role):
+    return (
+        f"Project goal:\n{goal}\n\n"
+        f"You are the {role} working for a manager. Begin implementation immediately. "
+        "Do not act as the manager; focus on execution and report progress with concrete results."
+    )
+
+
 def _extract_json_action(text):
     if not text:
         return None
@@ -642,7 +869,13 @@ def _run_orchestrator_decision(orch, session_name, latest_output):
     provider = orch.get("provider") or DEFAULT_PROVIDER
     goal = orch.get("goal") or ""
     managed = orch.get("managed_sessions") or []
+    config = _get_provider_config()
+    base_prompt = _get_orchestrator_base_prompt(config)
+    history_text = _format_recent_history(session_name, limit=5)
     prompt = f"""TASK: Decide the next action for orchestrator "{orch.get('name')}". Respond with ONLY valid JSON.
+
+Manager instructions:
+{base_prompt}
 
 Goal:
 {goal}
@@ -651,6 +884,9 @@ This orchestrator ONLY manages these sessions: {", ".join(managed) if managed el
 Managed session just became idle: {session_name}
 Latest output:
 {latest_output}
+
+Recent conversation (last 5 messages, if any):
+{history_text or "None"}
 
 Respond with one of:
 {{"action":"inject_prompt","target_session":"<name>","prompt":"..."}}
@@ -665,7 +901,6 @@ Rules:
 - Do NOT ask the human to choose an orchestrator.
 - If you inject, target_session MUST be the managed session name shown above.
 """
-    config = _get_provider_config()
     cwd = _safe_cwd(None)
     try:
         if provider == "codex":
@@ -698,6 +933,8 @@ def _inject_prompt_to_session(session_name, prompt):
         return
     provider = _get_session_provider_for_name(session_name)
     resume_session_id = _get_session_id_for_name(session_name)
+    session_workdir = _get_session_workdir(session_name)
+    cwd = _safe_cwd(session_workdir or None)
     job_key = f"{provider}:{session_name}"
     with _JOB_LOCK:
         existing = _JOBS.get(job_key)
@@ -707,7 +944,7 @@ def _inject_prompt_to_session(session_name, prompt):
             job_key,
             session_name,
             prompt,
-            _safe_cwd(None),
+            cwd,
             [],
             300,
             resume_session_id,
@@ -1149,6 +1386,15 @@ def _get_session_provider_for_name(name):
         return provider if provider in SUPPORTED_PROVIDERS else DEFAULT_PROVIDER
 
 
+def _get_session_workdir(name):
+    if not name:
+        return ""
+    with _SESSION_LOCK:
+        data = _load_sessions()
+        record = data.get(name) or {}
+        return (record.get("workdir") or "").strip()
+
+
 def _get_session_status(name):
     if not name:
         return "idle"
@@ -1516,28 +1762,27 @@ Previous conversation history from other providers:
         raise FileNotFoundError("copilot CLI not found")
     
     args = [copilot_path]
-    
-    # Add resume flag if resuming a session (must come before -p)
+
+    # Add resume flag if resuming a session
     if resume_session_id:
         args.extend(["--resume", resume_session_id])
     elif resume_last:
         args.append("--continue")
-    
+
     # Add permission flags based on config
     copilot_permissions = (config.get("copilot_permissions") or "").strip()
     if copilot_permissions:
         args.append(f"--{copilot_permissions}")
     else:
         args.append("--allow-all-paths")
-    
+
     # Add model flag if configured
     copilot_model = (config.get("copilot_model") or "").strip()
     if copilot_model:
         args.extend(["--model", copilot_model])
-    
-    # Add prompt flag last
-    args.extend(["-p", prompt])
-    
+
+    # DO NOT add -p flag - prompt will be passed via stdin for multi-line support
+
     mcp_data = _load_mcp_json(config)
     if mcp_data and (config.get("copilot_enable_mcp") is True):
         mcp_path = _write_mcp_json_file(mcp_data)
@@ -1549,16 +1794,36 @@ Previous conversation history from other providers:
     token_env = (config.get("copilot_token_env") or "GH_TOKEN").strip() or "GH_TOKEN"
     if token:
         env[token_env] = token
-    proc = subprocess.run(
+
+    # Use stdin for multi-line prompt support
+    proc = subprocess.Popen(
         args,
         cwd=cwd,
-        capture_output=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
-        timeout=timeout_sec,
         env=env,
     )
-    return proc, args
+
+    try:
+        # Write prompt to stdin and get output with timeout
+        stdout, stderr = proc.communicate(input=prompt + '\n', timeout=timeout_sec)
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        returncode = -1
+
+    # Return mock subprocess.CompletedProcess-like object for API compatibility
+    class ProcResult:
+        def __init__(self, returncode, stdout, stderr):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    return ProcResult(returncode, stdout, stderr), args
 
 
 def _run_gemini_exec(prompt, history_messages, config, timeout_sec=300, cwd=None, resume_session_id=None, resume_last=False, context_briefing=None):
@@ -1589,20 +1854,25 @@ Previous conversation history from other providers:
     if resume_last:
         args.extend(["--resume", "latest"])
     
-    # Add prompt flag last
-    args.extend(["-p", prompt])
-    
-    proc = subprocess.run(
+    # Use stdin for multi-line prompt support (NOT command-line arg)
+    proc = subprocess.Popen(
         args,
         cwd=cwd,
-        capture_output=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
-        timeout=timeout_sec,
     )
+    try:
+        stdout, stderr = proc.communicate(input=prompt + "\n", timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        raise RuntimeError("gemini CLI timed out")
     if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout or "gemini CLI failed").strip())
-    return (proc.stdout or "").strip()
+        raise RuntimeError(_filter_debug_messages((stderr or stdout or "gemini CLI failed")).strip())
+    return _filter_debug_messages((stdout or "").strip())
 
 
 def _ensure_gemini_policy():
@@ -1809,22 +2079,27 @@ Previous conversation history from other providers:
     elif resume_last:
         args.append("--continue")
     
-    # Add prompt flag last
-    args.extend(["-p", prompt])
-    
-    proc = subprocess.run(
+    # Use stdin for multi-line prompt support (NOT command-line arg)
+    proc = subprocess.Popen(
         args,
         cwd=cwd,
-        capture_output=True,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
-        timeout=timeout_sec,
     )
+    try:
+        stdout, stderr = proc.communicate(input=prompt + "\n", timeout=timeout_sec)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        raise RuntimeError("claude CLI timed out")
     if proc.returncode != 0:
-        raise RuntimeError((proc.stderr or proc.stdout or "claude CLI failed").strip())
+        raise RuntimeError(_filter_debug_messages((stderr or stdout or "claude CLI failed")).strip())
 
     # Clean the output to remove tool execution markers for better formatting
-    output = (proc.stdout or "").strip()
+    output = _filter_debug_messages((stdout or "").strip())
     return _clean_claude_output(output)
 
 
@@ -1890,6 +2165,131 @@ def _extract_codex_assistant_output(raw_text):
     if assistant_text:
         return "\n".join(assistant_text)
     return raw_text
+
+
+@APP.get("/health/dashboard")
+def health_dashboard():
+    """Render the health dashboard UI."""
+    return render_template("health_dashboard.html")
+
+
+@APP.get("/api/health/full")
+def health_full():
+    """Get comprehensive health status for all bil-dir components."""
+    config = _load_client_config()
+    provider_status = _provider_path_status(config)
+    gmail_status = _gmail_auth_status()
+
+    providers = {}
+    for provider_name in sorted(SUPPORTED_PROVIDERS):
+        is_available = provider_status.get(provider_name, False)
+        providers[provider_name] = {
+            "status": "healthy" if is_available else "error",
+            "message": "CLI found" if is_available else "CLI not found in PATH",
+            "available": is_available,
+        }
+
+    mcp_servers = _get_mcp_servers_status()
+    tasks = _get_tasks_health_status()
+    sessions = _get_sessions_health_status()
+
+    component_statuses = [gmail_status.get("status"), mcp_servers.get("status"), tasks.get("status"), sessions.get("status")]
+    component_statuses.extend([value.get("status") for value in providers.values()])
+
+    if "error" in component_statuses:
+        overall_status = "error"
+    elif "warning" in component_statuses:
+        overall_status = "warning"
+    elif "info" in component_statuses:
+        overall_status = "info"
+    else:
+        overall_status = "healthy"
+
+    return jsonify(
+        {
+            "overall_status": overall_status,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "providers": providers,
+            "gmail_mcp": gmail_status,
+            "mcp_servers": mcp_servers,
+            "tasks": tasks,
+            "sessions": sessions,
+        }
+    )
+
+
+@APP.get("/api/health/logs")
+def health_logs():
+    limit_raw = request.args.get("limit", "50")
+    try:
+        limit = int(limit_raw)
+    except ValueError:
+        limit = 50
+    limit = max(1, min(limit, 200))
+    path = pathlib.Path(LOG_STORE_PATH)
+    entries = []
+    if path.exists():
+        try:
+            lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except Exception:
+            lines = []
+        for line in lines[-limit:]:
+            timestamp = ""
+            try:
+                payload = json.loads(line)
+                ts = payload.get("ts") or payload.get("timestamp")
+                if ts is not None:
+                    timestamp = datetime.datetime.fromtimestamp(float(ts)).isoformat()
+            except Exception:
+                timestamp = ""
+            entries.append({"timestamp": timestamp, "file": path.name, "message": line})
+    return jsonify({"logs": entries})
+
+
+@APP.get("/api/health/test-provider/<provider>")
+def health_test_provider(provider):
+    provider = (provider or "").lower()
+    if provider not in SUPPORTED_PROVIDERS:
+        return jsonify({"status": "error", "message": "Unknown provider", "available": False}), 400
+    config = _load_client_config()
+    status = _provider_path_status(config)
+    is_available = bool(status.get(provider))
+    return jsonify(
+        {
+            "status": "healthy" if is_available else "error",
+            "message": "CLI found" if is_available else "CLI not found in PATH",
+            "available": is_available,
+        }
+    )
+
+
+@APP.post("/gmail/reauth")
+def gmail_reauth():
+    npx_path = _resolve_npx_path()
+    if not npx_path:
+        return jsonify({"ok": False, "error": "npx not found in PATH"}), 500
+    cmd = [npx_path, "-y", "@gongrzhe/server-gmail-autoauth-mcp", "auth"]
+    try:
+        creds_path = pathlib.Path.home() / ".gmail-mcp" / "credentials.json"
+        try:
+            if creds_path.exists():
+                creds_path.unlink()
+        except Exception:
+            pass
+        if os.name == "nt":
+            console_cmd = ["cmd", "/c", "start"] + cmd
+            subprocess.Popen(console_cmd, cwd=DEFAULT_CWD)
+        else:
+            subprocess.Popen(
+                cmd,
+                cwd=DEFAULT_CWD,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+            )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    return jsonify({"ok": True})
 
 
 @APP.get("/health")
@@ -1966,6 +2366,9 @@ def config_ui():
         providers=sorted(SUPPORTED_PROVIDERS),
         provider_status=_provider_path_status(config),
         provider_models=_get_provider_model_info(),
+        gmail_status=_gmail_auth_status(),
+        orch_base_prompt=(config.get("orch_base_prompt") or "").strip() or DEFAULT_ORCH_BASE_PROMPT,
+        orch_default_prompt=DEFAULT_ORCH_BASE_PROMPT,
     )
 
 
@@ -1987,6 +2390,7 @@ def config_save():
     data["copilot_path"] = (form.get("copilot_path") or "").strip()
     data["copilot_model"] = (form.get("copilot_model") or "").strip()
     data["mcp_json"] = (form.get("mcp_json") or "").strip()
+    data["orch_base_prompt"] = (form.get("orch_base_prompt") or "").strip()
     if "copilot_token" in form:
         data["copilot_token"] = (form.get("copilot_token") or "").strip()
     if "copilot_token_env" in form:
@@ -2008,6 +2412,9 @@ def config_save():
         provider_models=_get_provider_model_info(),
         saved=error is None,
         error=error,
+        gmail_status=_gmail_auth_status(),
+        orch_base_prompt=(data.get("orch_base_prompt") or "").strip() or DEFAULT_ORCH_BASE_PROMPT,
+        orch_default_prompt=DEFAULT_ORCH_BASE_PROMPT,
     )
 
 
@@ -2031,6 +2438,7 @@ def home():
     session_list = _build_session_list(sessions)
     provider_models = _get_provider_model_info()
     orchestrators = _build_orchestrator_list()
+    gmail_status = _gmail_auth_status()
     return render_template(
         "chat.html",
         sessions=sessions,
@@ -2043,6 +2451,7 @@ def home():
         history_tools=[],
         default_workdir=default_workdir,
         provider_models=provider_models,
+        gmail_status=gmail_status,
     )
 
 
@@ -2056,6 +2465,7 @@ def chat_home():
     session_list = _build_session_list(sessions)
     provider_models = _get_provider_model_info()
     orchestrators = _build_orchestrator_list()
+    gmail_status = _gmail_auth_status()
     return render_template(
         "chat.html",
         sessions=sessions,
@@ -2068,6 +2478,7 @@ def chat_home():
         history_tools=[],
         default_workdir=default_workdir,
         provider_models=provider_models,
+        gmail_status=gmail_status,
     )
 
 
@@ -2084,6 +2495,7 @@ def chat_named(name):
     _touch_session(name)
     provider_models = _get_provider_model_info()
     orchestrators = _build_orchestrator_list()
+    gmail_status = _gmail_auth_status()
     # Get session-specific workdir if set
     session_record = sessions.get(name) or {}
     session_workdir = (session_record.get("workdir") or "").strip() if isinstance(session_record, dict) else ""
@@ -2101,6 +2513,7 @@ def chat_named(name):
         default_workdir=default_workdir,
         session_workdir=session_workdir,
         provider_models=provider_models,
+        gmail_status=gmail_status,
     )
 
 
@@ -2115,6 +2528,7 @@ def master_view():
     provider_models = _get_provider_model_info()
     orchestrators = _build_orchestrator_list()
     master_snapshot = _build_master_snapshot()
+    gmail_status = _gmail_auth_status()
     return render_template(
         "chat.html",
         sessions=sessions,
@@ -2129,6 +2543,7 @@ def master_view():
         provider_models=provider_models,
         view_mode="master",
         master_messages=master_snapshot.get("messages") or [],
+        gmail_status=gmail_status,
     )
 
 
@@ -2171,6 +2586,9 @@ def task_view(task_id):
     session_list = _build_session_list(sessions)
     provider_models = _get_provider_model_info()
     orchestrators = _build_orchestrator_list()
+    gmail_status = _gmail_auth_status()
+    prompt_text = (task.get("prompt") or task.get("command") or "")
+    task_mentions_gmail = "gmail" in prompt_text.lower()
     
     return render_template(
         "chat.html",
@@ -2186,6 +2604,8 @@ def task_view(task_id):
         selected_task=task,
         view_mode="task",
         is_new_task=False,
+        gmail_status=gmail_status,
+        task_mentions_gmail=task_mentions_gmail,
     )
 
 
@@ -2199,6 +2619,7 @@ def task_new():
     session_list = _build_session_list(sessions)
     provider_models = _get_provider_model_info()
     orchestrators = _build_orchestrator_list()
+    gmail_status = _gmail_auth_status()
     empty_task = {
         "id": "",
         "name": "",
@@ -2229,6 +2650,8 @@ def task_new():
         selected_task=empty_task,
         view_mode="task",
         is_new_task=True,
+        gmail_status=gmail_status,
+        task_mentions_gmail=False,
     )
 
 
@@ -2249,6 +2672,7 @@ def orchestrator_view(orch_id):
     orch_list = _build_orchestrator_list()
     history_text = _build_orchestrator_history_text(orch.get("history"))
     orch["history_text"] = history_text
+    gmail_status = _gmail_auth_status()
     return render_template(
         "chat.html",
         sessions=sessions,
@@ -2262,6 +2686,7 @@ def orchestrator_view(orch_id):
         provider_models=provider_models,
         selected_orchestrator=orch,
         view_mode="orchestrator",
+        gmail_status=gmail_status,
     )
 
 
@@ -2539,9 +2964,28 @@ def exec_codex():
             _set_session_status(session_name, "idle")
 
 
+def _filter_debug_messages(text):
+    """Filter out debug messages from CLI output.
+
+    Removes messages like 'Reading prompt from stdin' that are debug output
+    from the stdin implementation, not part of the actual response.
+    """
+    if not text:
+        return text
+    lines = text.split('\n')
+    filtered_lines = [
+        line for line in lines
+        if "reading prompt from stdin" not in line.lower()
+    ]
+    return '\n'.join(filtered_lines)
+
+
 def _enqueue_output(pipe, q, label):
+    """Enqueue output lines while filtering debug messages."""
     for line in iter(pipe.readline, ""):
-        q.put((label, line))
+        # Filter out debug messages from stdin implementation
+        if "reading prompt from stdin" not in line.lower():
+            q.put((label, line))
     pipe.close()
 
 
@@ -2603,6 +3047,11 @@ class _Job:
 
 
 def _build_codex_args(codex_path, extra_args, json_events, resume_session_id, resume_last, prompt, context_briefing=None):
+    """Build codex command args for interactive sessions with stdin support.
+
+    NOTE: The prompt is NOT appended to args - it will be passed via stdin.
+    This enables multi-line prompt support in interactive sessions.
+    """
     # Inject context briefing if provided and not resuming
     if context_briefing and not resume_session_id and not resume_last:
         logger.info(f"[Context] Injecting {len(context_briefing)} chars of context into codex stream")
@@ -2617,7 +3066,7 @@ Previous conversation history from other providers:
 # Current Request
 
 {prompt}"""
-    
+
     args = [codex_path]
     sandbox_mode = _get_sandbox_mode(_get_provider_config(), "codex")
     if sandbox_mode:
@@ -2634,8 +3083,8 @@ Previous conversation history from other providers:
             args.append(resume_session_id)
         else:
             args.append("--last")
-    args.append(prompt)
-    return args
+    # DO NOT append prompt - it will be passed via stdin for multi-line support
+    return args, prompt
 
 
 def _broadcast_agent_message(job, text):
@@ -2744,7 +3193,8 @@ def _start_codex_job(job):
             with _JOB_LOCK:
                 _JOBS.pop(job.key, None)
             return
-        args = _build_codex_args(
+        # _build_codex_args now returns (args, prompt) for stdin support
+        args, prompt = _build_codex_args(
             codex_path,
             job.extra_args,
             job.json_events,
@@ -2757,12 +3207,16 @@ def _start_codex_job(job):
             proc = subprocess.Popen(
                 args,
                 cwd=job.cwd,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 bufsize=1,
             )
+            # Write prompt to stdin for multi-line support
+            proc.stdin.write(prompt + '\n')
+            proc.stdin.close()
         except FileNotFoundError:
             _broadcast_error(job, "codex CLI not found in PATH")
             job.done.set()
@@ -2883,28 +3337,27 @@ Previous conversation history from other providers:
             return
         
         args = [copilot_path]
-        
-        # Add resume flag if resuming a session (must come before -p)
+
+        # Add resume flag if resuming a session
         if job.resume_session_id:
             args.extend(["--resume", job.resume_session_id])
         elif job.resume_last:
             args.append("--continue")
-        
+
         # Add permission flags based on config
         copilot_permissions = (config.get("copilot_permissions") or "").strip()
         if copilot_permissions:
             args.append(f"--{copilot_permissions}")
         else:
             args.append("--allow-all-paths")
-        
+
         # Add model flag if configured
         copilot_model = (config.get("copilot_model") or "").strip()
         if copilot_model:
             args.extend(["--model", copilot_model])
-        
-        # Add prompt flag last
-        args.extend(["-p", prompt])
-        
+
+        # DO NOT add -p flag - prompt will be passed via stdin for multi-line support
+
         mcp_data = _load_mcp_json(config)
         if mcp_data and (config.get("copilot_enable_mcp") is True):
             mcp_path = _write_mcp_json_file(mcp_data)
@@ -2924,6 +3377,7 @@ Previous conversation history from other providers:
             proc = subprocess.Popen(
                 args,
                 cwd=job.cwd,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -2931,6 +3385,9 @@ Previous conversation history from other providers:
                 bufsize=1,
                 env=env,
             )
+            # Write prompt to stdin for multi-line support
+            proc.stdin.write(prompt + '\n')
+            proc.stdin.close()
         except FileNotFoundError:
             _broadcast_error(job, "copilot CLI not found in PATH")
             job.done.set()
@@ -3043,18 +3500,22 @@ Previous conversation history from other providers:
         if job.resume_session_id or job.resume_last:
             args.extend(["--resume", "latest"])
         
-        # Add prompt flag last
-        args.extend(["-p", prompt])
         try:
             proc = subprocess.Popen(
                 args,
                 cwd=job.cwd,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 bufsize=1,
             )
+            # Write prompt to stdin for multi-line support
+            if prompt:
+                proc.stdin.write(prompt + "\n")
+                proc.stdin.flush()
+                proc.stdin.close()
         except FileNotFoundError:
             _broadcast_error(job, "gemini CLI not found in PATH")
             job.done.set()
@@ -3269,38 +3730,43 @@ def _run_task_exec(task):
     provider = (task.get("provider") or DEFAULT_PROVIDER).lower()
     config = _get_provider_config()
     cwd = _safe_cwd((task.get("workdir") or "").strip() or None)
-    
+
+    # Get task timeout (default 900s, increased from 300s for complex tasks)
+    timeout_sec = task.get("timeout_sec", 900)
+
     # For tasks, we need to ensure non-interactive execution
     if provider == "codex":
         # Override sandbox mode to danger-full-access for tasks
         original_sandbox = config.get("sandbox_mode_codex")
         config["sandbox_mode_codex"] = "danger-full-access"
         try:
-            proc, cmd = _run_codex_exec(prompt, cwd, json_events=True)
+            proc, cmd = _run_codex_exec(prompt, cwd, json_events=True, timeout_sec=timeout_sec)
         finally:
             # Restore original sandbox mode
             if original_sandbox is None:
                 config.pop("sandbox_mode_codex", None)
             else:
                 config["sandbox_mode_codex"] = original_sandbox
-                
+
         if proc.returncode != 0:
-            raise RuntimeError((proc.stderr or proc.stdout or "codex failed").strip())
+            error_msg = _filter_debug_messages(proc.stderr or proc.stdout or "codex failed").strip()
+            raise RuntimeError(error_msg)
         # Parse JSON events to get the output
-        raw_output = (proc.stdout or "").strip()
+        raw_output = _filter_debug_messages((proc.stdout or "").strip())
         output_text = _extract_codex_assistant_output(raw_output)
         return {"output": output_text, "raw_output": raw_output, "cmd": cmd}
     if provider == "copilot":
-        proc, cmd = _run_copilot_exec(prompt, cwd, config=config)
+        proc, cmd = _run_copilot_exec(prompt, cwd, config=config, timeout_sec=timeout_sec)
         if proc.returncode != 0:
-            raise RuntimeError((proc.stderr or proc.stdout or "copilot failed").strip())
-        raw_output = _strip_copilot_footer((proc.stdout or "").strip())
+            error_msg = _filter_debug_messages(proc.stderr or proc.stdout or "copilot failed").strip()
+            raise RuntimeError(error_msg)
+        raw_output = _filter_debug_messages(_strip_copilot_footer((proc.stdout or "").strip()))
         return {"output": raw_output, "raw_output": raw_output, "cmd": cmd}
     if provider == "gemini":
-        text = _run_gemini_exec(prompt, [], config=config, cwd=cwd)
+        text = _run_gemini_exec(prompt, [], config=config, cwd=cwd, timeout_sec=timeout_sec)
         return {"output": text, "raw_output": text, "cmd": [_resolve_gemini_path(config) or "gemini", "-p", prompt]}
     if provider == "claude":
-        text = _run_claude_exec(prompt, config=config, cwd=cwd)
+        text = _run_claude_exec(prompt, config=config, cwd=cwd, timeout_sec=timeout_sec)
         return {"output": text, "raw_output": text, "cmd": [_resolve_claude_path(config) or "claude", "-p", prompt]}
     raise RuntimeError("unknown provider")
 
@@ -3349,7 +3815,7 @@ def _mark_task_run(task_id, status, output=None, raw_output=None, error=None, ru
     _broadcast_tasks_snapshot()
 
 
-def _run_task_async(task_id):
+def _run_task_async(task_id, force_run=False):
     def runner():
         started_ts = time.time()
         started_at = datetime.datetime.now().isoformat(timespec="seconds")
@@ -3361,9 +3827,20 @@ def _run_task_async(task_id):
                     task["last_status"] = "running"
                     _save_tasks(tasks)
             _broadcast_tasks_snapshot()
-            
+
             if not task:
                 return
+
+            # Failsafe: If task was disabled during execution, return to idle (unless manual run)
+            if not task.get("enabled") and not force_run:
+                with _TASK_LOCK:
+                    tasks = _load_tasks()
+                    if task_id in tasks:
+                        tasks[task_id]["last_status"] = "idle"
+                        _save_tasks(tasks)
+                _broadcast_tasks_snapshot()
+                return
+
             result = _run_task_exec(task)
             runtime_sec = time.time() - started_ts
             _mark_task_run(
@@ -3440,12 +3917,47 @@ def _orchestrator_loop():
                     elif prev is None and status == "idle" and not entry.get("handled_idle"):
                         should_handle = True
                     if should_handle:
+                        history = _get_history_for_name(name)
+                        has_history = bool(history.get("messages"))
+                        if not has_history and not entry.get("kickoff_sent"):
+                            role = _infer_worker_role(orch.get("goal") or "")
+                            kickoff = _build_worker_kickoff_prompt(orch.get("goal") or "", role)
+                            _inject_prompt_to_session(name, kickoff)
+                            now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+                            _append_orchestrator_history(
+                                orch_id,
+                                orch,
+                                {
+                                    "at": now_iso,
+                                    "action": "kickoff",
+                                    "target_session": name,
+                                    "prompt": kickoff,
+                                    "question": "",
+                                    "raw": "",
+                                },
+                            )
+                            entry["kickoff_sent"] = True
+                            entry["handled_idle"] = True
+                            state[name] = entry
+                            continue
                         latest = _get_latest_assistant_message(name)
                         action = _run_orchestrator_decision(orch, name, latest)
                         if not action or not isinstance(action, dict):
                             continue
                         now_iso = datetime.datetime.now().isoformat(timespec="seconds")
                         action_type = action.get("action") or ""
+                        if action_type not in {"inject_prompt", "wait", "ask_human"}:
+                            fallback_prompt = (
+                                f"Based on the latest output, propose the next concrete steps to progress this goal:\n{orch.get('goal') or ''}"
+                            ).strip()
+                            action_type = "inject_prompt"
+                            action = {
+                                "action": "inject_prompt",
+                                "target_session": name,
+                                "prompt": fallback_prompt,
+                                "question": "",
+                                "raw": action.get("raw") or action.get("_raw") or "",
+                            }
                         if action_type == "ask_human":
                             question = action.get("question") or ""
                             lower_q = question.lower()
@@ -3888,6 +4400,9 @@ def update_task(task_id):
             task["workdir"] = (body.get("workdir") or "").strip()
         if "enabled" in body:
             task["enabled"] = bool(body.get("enabled"))
+            # Clear running status when disabling task to prevent stuck "running" indicator
+            if not task["enabled"] and task.get("last_status") == "running":
+                task["last_status"] = "idle"
         if task.get("enabled"):
             next_dt = _compute_next_run(task)
             task["next_run"] = next_dt.isoformat(timespec="seconds") if next_dt else None
@@ -3905,7 +4420,7 @@ def run_task(task_id):
         tasks = _load_tasks()
         if task_id not in tasks:
             return jsonify({"error": "not found"}), 404
-    _run_task_async(task_id)
+    _run_task_async(task_id, force_run=True)
     return jsonify({"ok": True})
 
 
@@ -4087,7 +4602,18 @@ def delete_session(name):
 if __name__ == "__main__":
     # Migrate legacy .codex_ files to new names
     _migrate_legacy_files()
-    
+
+    # Startup cleanup: Clear any stuck "running" statuses from previous runs
+    with _TASK_LOCK:
+        tasks = _load_tasks()
+        changed = False
+        for task_id, task in tasks.items():
+            if task.get("last_status") == "running":
+                task["last_status"] = "idle"
+                changed = True
+        if changed:
+            _save_tasks(tasks)
+
     port = int(os.environ.get("PORT", "5025"))
     threading.Thread(target=_task_scheduler_loop, daemon=True).start()
     threading.Thread(target=_orchestrator_loop, daemon=True).start()

@@ -16,6 +16,19 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
+Create a local env file:
+```powershell
+Copy-Item .env.example .env
+```
+Then edit `.env` with your keys (e.g., `BRAVE_API_KEY`, `GEMINI_API_KEY`).
+
+**MCP Server Setup (Automatic):**
+On first run, bil-dir will automatically:
+- Install MCP server dependencies (`npm install` in `mcp_servers/`)
+- Configure the `bildir-tasks` MCP server for all providers
+- No manual configuration needed!
+
+If you don't have Node.js installed, get it from [nodejs.org](https://nodejs.org/) (required for MCP servers).
 
 ### First Run
 When you first run the app, it will automatically create these files in the project directory:
@@ -24,7 +37,9 @@ When you first run the app, it will automatically create these files in the proj
 - `orchestrators.json` - Orchestrator storage
 - `history.json` - Command history
 - `log.jsonl` - Event logs
-- `client_config.json` - UI preferences
+- `client_config.json` - UI preferences (includes MCP config)
+- `mcp.json` - MCP server configuration
+- `providers/config.toml` - Provider-specific MCP config
 - `context/` - Context files directory
 
 These files are git-ignored and will be created with default values on first startup. The repo ships empty `history.json` and `log.jsonl` to avoid leaking sensitive data.
@@ -61,10 +76,20 @@ Gemini and Claude run locally through their CLIs (no HTTP API calls from the app
 
 ## Config
 Open `/config` and use the tabs:
-- General: CLI availability + CLI paths.
-- Set a default working directory (used when no per-request path is set).
-- Permissions: per-model full-permissions toggles and sandbox mode (Codex honors `--sandbox` from here).
-- MCP: JSON config + quick-add buttons. Applies to Codex. Copilot MCP is disabled by default to avoid invalid config errors.
+- **General**: CLI availability + CLI paths. Set a default working directory.
+- **Permissions**: Per-model full-permissions toggles and sandbox mode.
+- **MCP**: Configure MCP servers for all providers. Add any MCP server (brave-search, gmail, custom servers, etc.)
+
+### MCP Configuration Management
+When you add/edit MCP servers in the MCP tab, bil-dir automatically updates:
+  - `providers/config.toml` (Codex - local)
+  - `mcp.json` (Copilot/Claude - local)
+  - `.gemini/settings.json` (Gemini - project-level)
+  - `~/.codex/config.toml` (Codex - global)
+  - `~/.copilot/mcp-config.json` (Copilot - global)
+  - `~/.claude.json` (Claude - global)
+
+This means MCP servers work whether you use providers through bil-dir OR run CLIs directly from command line.
 
 Enable MCP for Copilot by adding this to `client_config.json`:
 ```json
@@ -72,6 +97,50 @@ Enable MCP for Copilot by adding this to `client_config.json`:
   "copilot_enable_mcp": true
 }
 ```
+
+## MCP (Model Context Protocol)
+
+bil-dir has **two MCP-related components**:
+
+### 1. MCP Configuration System
+bil-dir manages MCP server configurations for all AI providers. Configure ANY MCP servers via:
+- Web UI: `/config` → MCP tab
+- File: `client_config.json` → `mcp_json` field
+
+When you add/update MCP servers, bil-dir automatically syncs the configuration to:
+- Providers when used through bil-dir
+- Global CLI configs for standalone use (`~/.codex/config.toml`, `~/.copilot/mcp-config.json`, `~/.claude.json`)
+
+**Examples of MCP servers you can add:**
+- `brave-search` - Web search capabilities
+- `gmail` - Email operations
+- `github` - GitHub operations
+- `bildir-tasks` - Task scheduling (built-in, see below)
+- Any custom MCP server
+
+### 2. Built-in MCP Server: `bildir-tasks`
+bil-dir includes a task scheduler MCP server that allows AI providers to:
+- Schedule tasks (interval/daily/weekly/once)
+- List and manage existing tasks
+- Enable/disable tasks
+- View task history
+
+**Example:** Ask any provider: *"Create a task to check the weather every 30 minutes"*
+
+**Automatic Setup:**
+On first run, bil-dir automatically:
+- Installs `bildir-tasks` dependencies
+- Adds `bildir-tasks` to MCP configuration
+- Syncs to all provider configs (both bil-dir and standalone CLI)
+
+| Provider | Through bil-dir | Standalone CLI | Config Location |
+|----------|----------------|----------------|-----------------|
+| **Codex** | ✅ | ✅ | `~/.codex/config.toml` |
+| **Copilot** | ✅ | ✅ | `~/.copilot/mcp-config.json` |
+| **Claude** | ✅ | ✅ | `~/.claude.json` |
+| **Gemini** | ✅ | ✅ | `.gemini/settings.json` (project-level) |
+
+See `MCP_ALL_PROVIDERS.md` for detailed documentation.
 
 ## Usage
 Health check:

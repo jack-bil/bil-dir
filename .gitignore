@@ -37,6 +37,7 @@ enhancements.md
 # IDE/AI assistant cache
 .claude/
 .cursor/
+.gemini/
 
 # Test artifacts
 .playwright-mcp/
@@ -62,3 +63,44 @@ debug_*.png
 # Generated installer files
 start.bat
 start.command
+
+# Local-only notes
+LOCAL_NOTES.md
+# bil-dir runtime data
+history.json
+log.jsonl
+sessions.json
+tasks.json
+orchestrators.json
+master_history.json
+client_config.json
+mcp.json
+.mcp.json
+.codex_history.json
+
+# local caches
+node_modules/
+mcp_servers/
+
+# env
+.env
+.env.*
+
+# misc local artifacts
+*.log
+*.bak
+nul
+# local-only docs (keep README.md tracked)
+AGENTS.md
+INSTALL.md
+ORCHESTRATOR_REQUIREMENTS.md
+FIRST_RUN.md
+GMAIL_MCP_SETUP.md
+HEALTH_DASHBOARD_IMPLEMENTATION.md
+HEALTH_DASHBOARD_REPORT.md
+MCP_ALL_PROVIDERS.md
+MCP_INTEGRATION.md
+POWERSHELL_VERIFICATION.md
+VERIFICATION_COMPLETE.md
+VERIFICATION_REPORT.md
+.github/copilot-instructions.md
