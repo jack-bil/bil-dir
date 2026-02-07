@@ -66,6 +66,7 @@ start.command
 
 # Local-only notes
 LOCAL_NOTES.md
+GEMINI_SETUP.MD
 # bil-dir runtime data
 history.json
 log.jsonl
