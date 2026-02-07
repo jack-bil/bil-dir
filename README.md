@@ -217,6 +217,13 @@ Open `/master` to see a consolidated feed of session responses. You can route me
 @@session-name: your message here
 ```
 
+## Recent enhancements
+- Master console keeps the latest message at the bottom and preserves per-session color prefixes.
+- Inline markdown now renders in master console lines (without changing the terminal look).
+- Session menu now opens directly under the menu button and clamps to the viewport.
+- Task flyout menu opens vertically and closes on scroll/resize, matching session menu behavior.
+- Master prompt input no longer triggers spellcheck underlines for `@@session:`.
+
 ## Orchestrators
 Create orchestrators from the UI to manage sessions with a goal. Orchestrators keep a decision history and can inject prompts into managed sessions.
 

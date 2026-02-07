@@ -141,10 +141,11 @@
       }
       .modal {
         position: fixed;
-        top: 50%;
+        top: calc(env(safe-area-inset-top, 0px) + 72px);
         left: 50%;
-        transform: translate(-50%, -50%);
+        transform: translate(-50%, 0);
         width: min(560px, 92vw);
+        max-height: calc(100vh - 120px);
         background: #0b0f16;
         border: 1px solid var(--border);
         border-radius: 14px;
@@ -153,6 +154,9 @@
         opacity: 0;
         pointer-events: none;
         z-index: 61;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
       }
       .modal.open,
       .modal-overlay.open {
@@ -184,6 +188,10 @@
       }
       .form-group {
         margin-bottom: 16px;
+      }
+      .modal form {
+        overflow: auto;
+        padding-right: 6px;
       }
       .form-group label {
         display: block;
@@ -238,6 +246,9 @@
         display: flex;
         flex-direction: column;
         gap: 8px;
+        max-height: 240px;
+        overflow: auto;
+        padding-right: 6px;
       }
       .checkbox-row {
         display: flex;
@@ -751,13 +762,15 @@
         background: #0b0f16;
         border: 1px solid var(--border);
         border-radius: 10px;
-        min-width: 170px;
+        min-width: 100px;
         padding: 6px;
         box-shadow: 0 12px 30px rgba(0,0,0,0.35);
         display: none;
+        flex-direction: column;
+        align-items: stretch;
         z-index: 9999;
       }
-      .task-flyout.open { display: block; }
+      .task-flyout.open { display: flex; }
       .cancel-btn {
         border: 1px solid #3b475a;
         background: #1b2332;
@@ -1679,10 +1692,9 @@
         <div class="form-group">
           <label for="orchProvider">Manager Provider</label>
           <select id="orchProvider">
-            <option value="codex">codex</option>
-            <option value="copilot">copilot</option>
-            <option value="gemini">gemini</option>
-            <option value="claude">claude</option>
+            {% for p in available_providers %}
+            <option value="{{ p }}">{{ p }}</option>
+            {% endfor %}
           </select>
         </div>
         <div class="form-group">
@@ -1731,10 +1743,9 @@
         <div class="form-group">
           <label for="modalTaskProvider">Provider</label>
           <select id="modalTaskProvider">
-            <option value="codex">codex</option>
-            <option value="copilot">copilot</option>
-            <option value="gemini">gemini</option>
-            <option value="claude">claude</option>
+            {% for p in available_providers %}
+            <option value="{{ p }}">{{ p }}</option>
+            {% endfor %}
           </select>
         </div>
         <div class="form-group">
@@ -1885,10 +1896,9 @@
             <div>
               <label for="taskProvider">Provider</label>
               <select id="taskProvider" name="taskProvider">
-                <option value="codex" {% if selected_task.provider == 'codex' %}selected{% endif %}>Codex</option>
-                <option value="copilot" {% if selected_task.provider == 'copilot' %}selected{% endif %}>Copilot</option>
-                <option value="gemini" {% if selected_task.provider == 'gemini' %}selected{% endif %}>Gemini</option>
-                <option value="claude" {% if selected_task.provider == 'claude' %}selected{% endif %}>Claude</option>
+                {% for p in available_providers %}
+                <option value="{{ p }}" {% if selected_task.provider == p %}selected{% endif %}>{{ p|capitalize }}</option>
+                {% endfor %}
               </select>
             </div>
             <div>
@@ -2050,21 +2060,26 @@
           </div>
         </div>
         <div class="messages-shell">
-          <div class="messages" id="messages"></div>
+          <div class="messages" id="messages">
+            {% if master_messages %}
+              {% for item in master_messages %}
+              <div class="msg assistant" data-session-name="{{ item.session_name | e }}" data-master-prefix="@@{{ item.session_name }}: " data-master-started="false" data-raw="{{ item.text | e }}"></div>
+              {% endfor %}
+            {% endif %}
+          </div>
         <form id="chatForm" class="composer">
           <input id="session_name" name="session_name" type="hidden" value="" />
         <div>
           <label class="visually-hidden" for="prompt">Message</label>
           <div class="prompt-row">
-            <textarea id="prompt" name="prompt" rows="1" placeholder="@@session-name: message"></textarea>
+            <textarea id="prompt" name="prompt" rows="1" placeholder="@@session-name: message" spellcheck="false"></textarea>
             <button type="submit" class="send-btn" aria-label="Send">↑</button>
           </div>
         </div>
         <select id="providerSelect" name="provider" class="hidden">
-          <option value="codex">codex</option>
-          <option value="copilot">copilot</option>
-          <option value="gemini">gemini</option>
-          <option value="claude">claude</option>
+          {% for p in available_providers %}
+          <option value="{{ p }}">{{ p }}</option>
+          {% endfor %}
         </select>
         <input type="checkbox" id="force_new" class="hidden" />
         <div class="cwd-row hidden">
@@ -2090,7 +2105,7 @@
         <div>
           <label class="visually-hidden" for="prompt">Message</label>
           <div class="prompt-row">
-            <textarea id="prompt" name="prompt" rows="1" placeholder="Type your message..."></textarea>
+            <textarea id="prompt" name="prompt" rows="1" placeholder="Type your message..." spellcheck="false"></textarea>
             <button type="submit" class="send-btn" aria-label="Send">↑</button>
           </div>
         </div>
@@ -2410,7 +2425,10 @@
           }
           span.className = `line ${kind}${lineKind ? ` ${lineKind}` : ""}`;
           const allowRich = !inCodeBlock && lineKind !== "code-fence";
-          const rendered = ansiToHtml(line, { linkify: allowRich });
+          const hasAnsi = /\x1b\[[0-9;]*m/.test(line);
+          const rendered = (!hasAnsi && allowRich && masterMode)
+            ? marked.parseInline(line)
+            : ansiToHtml(line, { linkify: allowRich });
           if (hasPrefix && !prefixUsed) {
             const prefixSpan = `<span class="master-prefix">${escapeHtml(prefix)}</span>`;
             span.innerHTML = prefixSpan + rendered;
@@ -2521,7 +2539,7 @@
         div.dataset.masterPrefix = `@@${sessionName}: `;
         div.dataset.masterStarted = "false";
         div.style.setProperty("--session-color", colorForSession(sessionName));
-        updateAssistantMessage(div, text + "\n", true);
+        updateAssistantMessage(div, normalizeMasterText(sessionName, text) + "\n", true);
         if (!skipScroll) scrollToBottom();
         return div;
       }
@@ -2537,6 +2555,16 @@
         el.dataset.raw = next;
         el.innerHTML = marked.parse(next);
         enhanceTables(el);
+      }
+
+      function normalizeMasterText(sessionName, text) {
+        if (!text) return text;
+        const prefix = `@@${sessionName}:`;
+        const trimmed = text.trimStart();
+        if (trimmed.startsWith(prefix)) {
+          return trimmed.slice(prefix.length).trimStart();
+        }
+        return text;
       }
 
       function appendTool(output) {
@@ -2578,7 +2606,19 @@
       function renderHistory() {
         console.log("renderHistory called, messages:", initialMessages?.length, "tools:", initialToolOutputs?.length);
         if (masterMode) {
-          if (Array.isArray(masterMessages) && masterMessages.length) {
+          const masterHasInitial = messages && messages.children && messages.children.length > 0;
+          if (masterHasInitial) {
+            Array.from(messages.children).forEach((el) => {
+              const sessionName = el.dataset.sessionName || (el.dataset.masterPrefix || "").replace(/^@@/, '').replace(/: $/, '');
+              if (sessionName) {
+                el.style.setProperty("--session-color", colorForSession(sessionName));
+              }
+              const raw = el.dataset.raw || "";
+              if (raw) {
+                appendTerminalBlock(el, normalizeMasterText(sessionName, raw), "agent", false);
+              }
+            });
+          } else if (Array.isArray(masterMessages) && masterMessages.length) {
             masterMessages.forEach((item) => {
               if (item && item.session_name && item.text) {
                 addMasterMessage(item.session_name, item.text, true);
@@ -2629,7 +2669,8 @@
           try {
             const data = JSON.parse(event.data);
             if (data.type === "snapshot") {
-              if (!masterSnapshotApplied && (!Array.isArray(masterMessages) || masterMessages.length === 0)) {
+              const masterHasInitial = messages && messages.children && messages.children.length > 0;
+              if (!masterSnapshotApplied && !masterHasInitial && (!Array.isArray(masterMessages) || masterMessages.length === 0)) {
                 const items = data.messages || [];
                 items.forEach((item) => {
                   if (item && item.session_name && item.text) {
@@ -2650,7 +2691,12 @@
         };
       }
       if (providerSelect) {
-        providerSelect.value = selectedProvider || "codex";
+        const hasOption = (value) => Array.from(providerSelect.options).some((o) => o.value === value);
+        if (selectedProvider && hasOption(selectedProvider)) {
+          providerSelect.value = selectedProvider;
+        } else if (providerSelect.options.length) {
+          providerSelect.value = providerSelect.options[0].value;
+        }
         providerSelect.disabled = !selectedSession;
       }
       document.body.dataset.provider = (providerSelect && providerSelect.value) ? providerSelect.value : (selectedProvider || "codex");
@@ -2804,7 +2850,9 @@
       function resetModalTaskForm() {
         if (modalTaskNameInput) modalTaskNameInput.value = "";
         if (modalTaskPromptInput) modalTaskPromptInput.value = "";
-        if (modalTaskProviderSelect) modalTaskProviderSelect.value = "codex";
+        if (modalTaskProviderSelect && modalTaskProviderSelect.options.length) {
+          modalTaskProviderSelect.value = modalTaskProviderSelect.options[0].value;
+        }
         if (modalTaskScheduleType) modalTaskScheduleType.value = "manual";
         if (modalTaskIntervalInput) modalTaskIntervalInput.value = "60";
         if (modalTaskTimeInput) modalTaskTimeInput.value = "";
@@ -3622,13 +3670,23 @@
           btn.addEventListener("click", (e) => {
             e.preventDefault();
             e.stopPropagation();
+            const wasOpen = panel.classList.contains("open");
             document.querySelectorAll(".menu-panel.open").forEach((open) => {
               if (open !== panel) open.classList.remove("open");
             });
+            if (wasOpen) {
+              panel.classList.remove("open");
+              return;
+            }
+            panel.classList.add("open");
             const rect = btn.getBoundingClientRect();
+            const panelWidth = panel.offsetWidth || 0;
+            let left = rect.left;
+            const maxLeft = Math.max(8, window.innerWidth - panelWidth - 8);
+            if (left > maxLeft) left = maxLeft;
+            if (left < 8) left = 8;
             panel.style.top = `${rect.bottom + 4}px`;
-            panel.style.left = `${rect.right - panel.offsetWidth}px`;
-            panel.classList.toggle("open");
+            panel.style.left = `${left}px`;
           });
           const modelBtn = panel.querySelector(".menu-item.has-submenu");
           if (modelBtn) {
@@ -4620,6 +4678,10 @@
           if (flyout) flyout.classList.remove("open");
         });
         window.addEventListener("scroll", () => {
+          const flyout = document.getElementById("taskFlyout");
+          if (flyout) flyout.classList.remove("open");
+        }, true);
+        window.addEventListener("resize", () => {
           const flyout = document.getElementById("taskFlyout");
           if (flyout) flyout.classList.remove("open");
         });

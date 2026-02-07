@@ -46,6 +46,7 @@ ORCH_STORE_PATH = os.environ.get("BILDIR_ORCH_STORE", os.path.join(DEFAULT_CWD, 
 CONTEXT_DIR = os.path.join(DEFAULT_CWD, "context")
 DEFAULT_PROVIDER = "codex"
 SUPPORTED_PROVIDERS = {"codex", "copilot", "gemini", "claude"}
+PROVIDER_ORDER = ["codex", "copilot", "gemini", "claude"]
 DEFAULT_ORCH_BASE_PROMPT = (
     "Act as the manager across any task type. Use the goal and context below to decide the next best action. "
     "If markdown files exist in the working directory, review them for context. "
@@ -129,6 +130,9 @@ Previous conversation history from other providers:
             args.append("--last")
 
     # Use stdin for multi-line prompt support (NOT command-line arg)
+    env = os.environ.copy()
+    if not env.get("CODEX_HOME"):
+        env["CODEX_HOME"] = _get_codex_home()
     proc = subprocess.Popen(
         args,
         cwd=cwd,
@@ -137,6 +141,7 @@ Previous conversation history from other providers:
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
+        env=env,
     )
 
     try:
@@ -160,6 +165,9 @@ Previous conversation history from other providers:
 
 def _resolve_codex_path():
     return os.environ.get("CODEX_PATH") or shutil.which("codex") or shutil.which("codex.cmd")
+
+def _get_codex_home():
+    return os.environ.get("CODEX_HOME") or os.path.join(pathlib.Path.home(), ".codex")
 
 
 def _resolve_copilot_path(config):
@@ -217,6 +225,12 @@ def _provider_path_status(config):
         "gemini": bool(_resolve_gemini_path(config)),
         "claude": bool(_resolve_claude_path(config)),
     }
+
+
+def _get_available_providers(config):
+    status = _provider_path_status(config)
+    available = [p for p in PROVIDER_ORDER if status.get(p)]
+    return available or PROVIDER_ORDER[:]
 
 def _get_provider_model_info():
     """Get current model info for each provider by reading their config files."""
@@ -1211,6 +1225,22 @@ def _load_history(workdir=None):
         return {}
 
 
+def _session_has_history(session_name, provider, workdir=None):
+    if not session_name or not provider:
+        return False
+    with _SESSION_LOCK:
+        data = _load_sessions()
+        record = data.get(session_name) or {}
+        session_ids = record.get("session_ids") or {}
+        session_id = session_ids.get(provider)
+        if not workdir:
+            workdir = record.get("workdir")
+    if not session_id:
+        return False
+    history = _load_history(workdir).get(session_id) or {}
+    return bool(history.get("messages"))
+
+
 def _save_history(data, workdir=None):
     """Save conversation history to the appropriate directory.
     
@@ -1457,6 +1487,19 @@ def _get_session_status(name):
     return status or "idle"
 
 
+def _session_has_active_job(name):
+    if not name:
+        return False
+    with _JOB_LOCK:
+        for job in _JOBS.values():
+            try:
+                if job.session_name == name and not job.done.is_set():
+                    return True
+            except Exception:
+                continue
+    return False
+
+
 def _set_session_status(name, status):
     if not name:
         return
@@ -1518,7 +1561,9 @@ def _ensure_session_id(name, provider):
         if not isinstance(session_ids, dict):
             session_ids = {}
         if not session_ids.get(provider):
-            if provider == "claude":
+            if provider == "copilot":
+                session_ids[provider] = None
+            elif provider == "claude":
                 session_ids[provider] = str(uuid.uuid4())
             else:
                 session_ids[provider] = f"{provider}-{uuid.uuid4().hex}"
@@ -1576,7 +1621,12 @@ def _append_history(session_id, session_name, conversation):
 def _sessions_with_status(sessions):
     status = {}
     for name in sessions.keys():
-        status[name] = _get_session_status(name)
+        current = _get_session_status(name)
+        if current == "running" and not _session_has_active_job(name):
+            with _SESSION_LOCK:
+                _SESSION_STATUS[name] = "idle"
+            current = "idle"
+        status[name] = current
     return status
 
 
@@ -1641,7 +1691,16 @@ def _build_master_snapshot():
         name = item.get("name")
         text = _get_latest_assistant_message(name)
         if text:
-            items.append({"session_name": name, "text": text})
+            items.append(
+                {
+                    "session_name": name,
+                    "text": text,
+                    "last_used": item.get("last_used") or "",
+                    "created_at": item.get("created_at") or "",
+                }
+            )
+    # Oldest to newest so the latest appears at the bottom.
+    items.sort(key=lambda x: (x.get("last_used") or x.get("created_at") or ""))
     return {"messages": items}
 
 
@@ -1818,7 +1877,7 @@ Previous conversation history from other providers:
     args = [copilot_path]
 
     # Add resume flag if resuming a session
-    if resume_session_id:
+    if resume_session_id and _is_uuid(resume_session_id):
         args.extend(["--resume", resume_session_id])
     elif resume_last:
         args.append("--continue")
@@ -1835,7 +1894,7 @@ Previous conversation history from other providers:
     if copilot_model:
         args.extend(["--model", copilot_model])
 
-    # DO NOT add -p flag - prompt will be passed via stdin for multi-line support
+    # Use stdin for multi-line prompt support (non-interactive)
 
     mcp_data = _load_mcp_json(config)
     if mcp_data and (config.get("copilot_enable_mcp") is True):
@@ -1849,7 +1908,6 @@ Previous conversation history from other providers:
     if token:
         env[token_env] = token
 
-    # Use stdin for multi-line prompt support
     proc = subprocess.Popen(
         args,
         cwd=cwd,
@@ -1862,7 +1920,6 @@ Previous conversation history from other providers:
     )
 
     try:
-        # Write prompt to stdin and get output with timeout
         stdout, stderr = proc.communicate(input=prompt + '\n', timeout=timeout_sec)
         returncode = proc.returncode
     except subprocess.TimeoutExpired:
@@ -1910,10 +1967,14 @@ Previous conversation history from other providers:
     
     # Use stdin for multi-line prompt support (NOT command-line arg)
     env = os.environ.copy()
-    if not env.get("GEMINI_API_KEY"):
-        api_key = _get_gemini_api_key_from_settings(cwd)
-        if api_key:
-            env["GEMINI_API_KEY"] = api_key
+    if _gca_available():
+        env["GOOGLE_GENAI_USE_GCA"] = "1"
+        env.pop("GEMINI_API_KEY", None)
+    else:
+        if not env.get("GEMINI_API_KEY"):
+            api_key = _get_gemini_api_key_from_settings(cwd)
+            if api_key:
+                env["GEMINI_API_KEY"] = api_key
     proc = subprocess.Popen(
         args,
         cwd=cwd,
@@ -2038,6 +2099,29 @@ priority = 90
     except Exception:
         # Best effort: do not block Gemini if policy can't be written
         return
+
+
+def _gca_available():
+    """Detect Google Cloud Application Default Credentials (OAuth)."""
+    # If explicitly set in env, assume available.
+    if os.environ.get("GOOGLE_GENAI_USE_GCA"):
+        return True
+    # Gemini CLI OAuth files (local)
+    home = pathlib.Path.home()
+    gemini_oauth = home / ".gemini" / "oauth_creds.json"
+    gemini_accounts = home / ".gemini" / "google_accounts.json"
+    if gemini_oauth.exists() or gemini_accounts.exists():
+        return True
+    # Windows default ADC path
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        adc = pathlib.Path(appdata) / "gcloud" / "application_default_credentials.json"
+        if adc.exists():
+            return True
+    # Linux/macOS default ADC path
+    home = pathlib.Path.home()
+    adc_unix = home / ".config" / "gcloud" / "application_default_credentials.json"
+    return adc_unix.exists()
 
 
 def _get_gemini_api_key_from_settings(cwd=None):
@@ -2584,6 +2668,20 @@ def diag_ui():
     return render_template("diag.html", ipconfig=ipconfig, port=port)
 
 
+@APP.get("/diag/home")
+def diag_home():
+    home = str(pathlib.Path.home())
+    session_state = pathlib.Path.home() / ".copilot" / "session-state"
+    exists = session_state.exists()
+    sample = []
+    if exists:
+        try:
+            sample = sorted([p.name for p in session_state.iterdir() if p.is_dir()])[-5:]
+        except Exception:
+            sample = []
+    return jsonify({"home": home, "session_state_exists": exists, "sample_dirs": sample})
+
+
 @APP.post("/pick-workdir")
 def pick_workdir():
     try:
@@ -2680,6 +2778,7 @@ def home():
     with _SESSION_LOCK:
         sessions = _load_sessions()
     config = _load_client_config()
+    available_providers = _get_available_providers(config)
     default_workdir = (config.get("default_workdir") or "").strip()
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
@@ -2698,6 +2797,7 @@ def home():
         history_tools=[],
         default_workdir=default_workdir,
         provider_models=provider_models,
+        available_providers=available_providers,
         gmail_status=gmail_status,
     )
 
@@ -2707,6 +2807,7 @@ def chat_home():
     with _SESSION_LOCK:
         sessions = _load_sessions()
     config = _load_client_config()
+    available_providers = _get_available_providers(config)
     default_workdir = (config.get("default_workdir") or "").strip()
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
@@ -2725,6 +2826,7 @@ def chat_home():
         history_tools=[],
         default_workdir=default_workdir,
         provider_models=provider_models,
+        available_providers=available_providers,
         gmail_status=gmail_status,
     )
 
@@ -2734,6 +2836,7 @@ def chat_named(name):
     with _SESSION_LOCK:
         sessions = _load_sessions()
     config = _load_client_config()
+    available_providers = _get_available_providers(config)
     default_workdir = (config.get("default_workdir") or "").strip()
     history = _get_history_for_name(name)
     session_status = _sessions_with_status(sessions)
@@ -2760,6 +2863,7 @@ def chat_named(name):
         default_workdir=default_workdir,
         session_workdir=session_workdir,
         provider_models=provider_models,
+        available_providers=available_providers,
         gmail_status=gmail_status,
     )
 
@@ -2769,6 +2873,7 @@ def master_view():
     with _SESSION_LOCK:
         sessions = _load_sessions()
     config = _load_client_config()
+    available_providers = _get_available_providers(config)
     default_workdir = (config.get("default_workdir") or "").strip()
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
@@ -2788,6 +2893,7 @@ def master_view():
         history_tools=[],
         default_workdir=default_workdir,
         provider_models=provider_models,
+        available_providers=available_providers,
         view_mode="master",
         master_messages=master_snapshot.get("messages") or [],
         gmail_status=gmail_status,
@@ -2828,6 +2934,7 @@ def task_view(task_id):
     task["raw_output_history_text"] = raw_history_text or (task.get("last_output_raw") or "")
     
     config = _load_client_config()
+    available_providers = _get_available_providers(config)
     default_workdir = (config.get("default_workdir") or "").strip()
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
@@ -2848,6 +2955,7 @@ def task_view(task_id):
         history_tools=[],
         default_workdir=default_workdir,
         provider_models=provider_models,
+        available_providers=available_providers,
         selected_task=task,
         view_mode="task",
         is_new_task=False,
@@ -2893,6 +3001,7 @@ def task_new():
     with _SESSION_LOCK:
         sessions = _load_sessions()
     config = _load_client_config()
+    available_providers = _get_available_providers(config)
     default_workdir = (config.get("default_workdir") or "").strip()
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
@@ -2926,6 +3035,7 @@ def task_new():
         history_tools=[],
         default_workdir=default_workdir,
         provider_models=provider_models,
+        available_providers=available_providers,
         selected_task=empty_task,
         view_mode="task",
         is_new_task=True,
@@ -2944,6 +3054,7 @@ def orchestrator_view(orch_id):
     if not orch:
         return "Orchestrator not found", 404
     config = _load_client_config()
+    available_providers = _get_available_providers(config)
     default_workdir = (config.get("default_workdir") or "").strip()
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
@@ -2963,6 +3074,7 @@ def orchestrator_view(orch_id):
         history_tools=[],
         default_workdir=default_workdir,
         provider_models=provider_models,
+        available_providers=available_providers,
         selected_orchestrator=orch,
         view_mode="orchestrator",
         gmail_status=gmail_status,
@@ -3154,6 +3266,8 @@ def exec_codex():
         elif provider == "gemini":
             history_messages = _get_history_for_name(session_name).get("messages") if session_name else []
             if resume_session_id and resume_session_id.startswith("gemini-") and not resume_last:
+                # Gemini resumes via --resume latest only when there is actual history.
+                resume_last = _session_has_history(session_name, "gemini")
                 resume_session_id = None
             text = _run_gemini_exec(prompt, history_messages, config=config, timeout_sec=timeout_sec, cwd=cwd, resume_session_id=resume_session_id, resume_last=resume_last, context_briefing=context_briefing)
             gemini_path = _resolve_gemini_path(config) or "gemini"
@@ -3255,6 +3369,7 @@ def _filter_debug_messages(text):
     filtered_lines = [
         line for line in lines
         if "reading prompt from stdin" not in line.lower()
+        and "codex_core::rollout::list: state db missing rollout path for thread" not in line
     ]
     return '\n'.join(filtered_lines)
 
@@ -3484,6 +3599,8 @@ def _start_codex_job(job):
         )
         try:
             env = os.environ.copy()
+            if not env.get("CODEX_HOME"):
+                env["CODEX_HOME"] = _get_codex_home()
             if not env.get("GEMINI_API_KEY"):
                 api_key = _get_gemini_api_key_from_settings(job.cwd)
                 if api_key:
@@ -3551,6 +3668,8 @@ def _start_codex_job(job):
                                     tool_outputs.append(output)
                     except json.JSONDecodeError:
                         pass
+                if label == "stderr" and "codex_core::rollout::list: state db missing rollout path for thread" in line_text:
+                    continue
                 job.broadcast(f"data: {label}:{line_text}\n\n")
             except queue.Empty:
                 if proc.poll() is not None:
@@ -3561,6 +3680,7 @@ def _start_codex_job(job):
                     break
 
         rc = proc.wait()
+
         _log_event(
             {
                 "type": "job.done",
@@ -3624,7 +3744,7 @@ Previous conversation history from other providers:
         args = [copilot_path]
 
         # Add resume flag if resuming a session
-        if job.resume_session_id:
+        if job.resume_session_id and _is_uuid(job.resume_session_id):
             args.extend(["--resume", job.resume_session_id])
         elif job.resume_last:
             args.append("--continue")
@@ -3641,7 +3761,7 @@ Previous conversation history from other providers:
         if copilot_model:
             args.extend(["--model", copilot_model])
 
-        # DO NOT add -p flag - prompt will be passed via stdin for multi-line support
+        # Use stdin for multi-line prompt support (non-interactive)
 
         mcp_data = _load_mcp_json(config)
         if mcp_data and (config.get("copilot_enable_mcp") is True):
@@ -3655,9 +3775,12 @@ Previous conversation history from other providers:
         if token:
             env[token_env] = token
         session_id = job.session_id or (job.session_name and _ensure_session_id(job.session_name, job.provider))
+        if session_id and not _is_uuid(session_id):
+            session_id = None
         if session_id:
             job.session_id = session_id
             job.broadcast(f"event: session_id\ndata: {session_id}\n\n")
+        session_state_dir = pathlib.Path.home() / ".copilot" / "session-state"
         try:
             proc = subprocess.Popen(
                 args,
@@ -3670,9 +3793,10 @@ Previous conversation history from other providers:
                 bufsize=1,
                 env=env,
             )
-            # Write prompt to stdin for multi-line support
-            proc.stdin.write(prompt + '\n')
-            proc.stdin.close()
+            if prompt:
+                proc.stdin.write(prompt + '\n')
+                proc.stdin.flush()
+                proc.stdin.close()
         except FileNotFoundError:
             _broadcast_error(job, "copilot CLI not found in PATH")
             job.done.set()
@@ -3718,6 +3842,43 @@ Previous conversation history from other providers:
                     break
 
         rc = proc.wait()
+
+        # Capture Copilot session ID from session-state directory
+        if job.session_name:
+            session_state_dir = pathlib.Path.home() / ".copilot" / "session-state"
+            if session_state_dir.exists():
+                try:
+                    candidates = []
+                    for p in session_state_dir.iterdir():
+                        if not p.is_dir():
+                            continue
+                        try:
+                            mtime = p.stat().st_mtime
+                        except Exception:
+                            continue
+                        candidates.append((mtime, p.name))
+                    if candidates:
+                        candidates.sort(reverse=True)
+                        actual_id = candidates[0][1]
+                        _set_session_name(job.session_name, actual_id, job.provider)
+                        job.session_id = actual_id
+                        job.broadcast(f"event: session_id\ndata: {actual_id}\n\n")
+                        _log_event(
+                            {
+                                "type": "copilot.session_id",
+                                "session_name": job.session_name,
+                                "session_id": actual_id,
+                            }
+                        )
+                except Exception as exc:
+                    _log_event(
+                        {
+                            "type": "copilot.session_id_error",
+                            "session_name": job.session_name,
+                            "error": str(exc),
+                        }
+                    )
+
         _log_event(
             {
                 "type": "job.done",
@@ -3786,6 +3947,11 @@ Previous conversation history from other providers:
             args.extend(["--resume", "latest"])
         
         try:
+            env = os.environ.copy()
+            if not env.get("GEMINI_API_KEY"):
+                api_key = _get_gemini_api_key_from_settings(job.cwd)
+                if api_key:
+                    env["GEMINI_API_KEY"] = api_key
             proc = subprocess.Popen(
                 args,
                 cwd=job.cwd,
@@ -3795,6 +3961,7 @@ Previous conversation history from other providers:
                 text=True,
                 encoding="utf-8",
                 bufsize=1,
+                env=env,
             )
             # Write prompt to stdin for multi-line support
             if prompt:
@@ -3839,7 +4006,6 @@ Previous conversation history from other providers:
                     break
 
         proc.wait()
-
         job.returncode = 0
         _log_event(
             {
@@ -4345,132 +4511,161 @@ def stream_codex():
     resume_last = bool(body.get("resume_last", False))
     json_events = bool(body.get("json_events", True))
     attach = bool(body.get("attach", False))
-    try:
-        cwd = _safe_cwd(body.get("cwd"))
-        if not isinstance(extra_args, list) or not all(isinstance(x, str) for x in extra_args):
-            return jsonify({"error": "extra_args must be a list of strings"}), 400
-        
-        # Capture current state BEFORE resolving provider (for context detection)
-        current_provider_before = None
-        current_session_id_before = None
-        if session_name:
-            current_provider_before = _get_session_provider_for_name(session_name)
-            with _SESSION_LOCK:
-                data = _load_sessions()
-                record = data.get(session_name) or {}
-                session_ids = record.get("session_ids") or {}
-                # Get session ID for CURRENT provider (before switch)
-                current_session_id_before = session_ids.get(current_provider_before)
-            logger.debug(f"[Context] Stream - Before resolve: provider={current_provider_before}, session_id={current_session_id_before}")
-        
-        if not resume_session_id and session_name:
-            resume_session_id = _get_session_id_for_name(session_name)
-        provider = _resolve_provider(session_name, requested_provider)
-        if provider == "gemini" and resume_session_id and resume_session_id.startswith("gemini-") and not resume_last:
-            resume_session_id = None
-        if session_name:
-            _touch_session(session_name)
-        logger.debug(f"[Context] Stream - After resolve: provider={provider}, requested={requested_provider}")
-        
-        # Check if we're switching providers and need to generate context
-        switching_providers = False
-        context_summary = ""
-        if session_name and current_provider_before and provider != current_provider_before:
-            logger.info(f"[Context] Stream - Provider changed: {current_provider_before} -> {provider}")
-            # Get session_ids for the NEW provider
-            with _SESSION_LOCK:
-                data = _load_sessions()
-                record = data.get(session_name) or {}
-                session_ids = record.get("session_ids") or {}
-                new_provider_session_id = session_ids.get(provider)
-            logger.debug(f"[Context] Stream - New provider session_id: {new_provider_session_id}")
-            
-            # If new provider doesn't have a session yet, we're starting fresh - generate summary
-            if not new_provider_session_id and current_session_id_before:
-                switching_providers = True
-                logger.info(f"[Context] Switching from {current_provider_before} to {provider} in session {session_name}")
-                try:
-                    config = _get_provider_config()
-                    workdir = record.get("workdir")  # Get workdir from session record
-                    summary = _generate_session_summary(
-                        current_provider_before,
-                        current_session_id_before,
-                        session_name,
-                        config,
-                        workdir
-                    )
-                    _append_context_briefing(session_name, summary, current_provider_before, provider)
-                    logger.info(f"[Context] Summary generated and saved")
-                except Exception as e:
-                    logger.error(f"[Context] Error generating summary: {e}", exc_info=True)
-            else:
-                logger.debug(f"[Context] Stream - Not generating: new_session_id={new_provider_session_id}, old_session_id={current_session_id_before}")
-        
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 409
+    _log_event(
+        {
+            "type": "stream.request",
+            "session_name": session_name,
+            "provider": requested_provider,
+            "has_prompt": bool(prompt),
+        }
+    )
+    if not isinstance(extra_args, list) or not all(isinstance(x, str) for x in extra_args):
+        return jsonify({"error": "extra_args must be a list of strings"}), 400
 
-    # Load context briefing for new provider sessions (when provider just switched)
-    context_briefing = None
-    if session_name:
-        # Check if this is a new session for this provider
-        with _SESSION_LOCK:
-            data = _load_sessions()
-            record = data.get(session_name) or {}
-            session_ids = record.get("session_ids") or {}
-            provider_has_session = session_ids.get(provider)
-        
-        if not provider_has_session:
-            context_briefing = _load_session_context(session_name)
+    job_holder = {"job": None, "error": None}
+    ready = threading.Event()
 
-    job_key = f"{provider}:{session_name or resume_session_id or f'anon-{uuid.uuid4().hex}'}"
-    with _JOB_LOCK:
-        existing = _JOBS.get(job_key)
-        if existing and not existing.done.is_set():
-            if attach or not prompt:
-                job = existing
-            else:
-                queued_payload = {
-                    "prompt": prompt,
-                    "provider": provider,
-                    "cwd": cwd,
-                    "extra_args": extra_args,
-                    "timeout_sec": timeout_sec,
-                    "resume_last": resume_last,
-                    "json_events": json_events,
-                    "context_briefing": context_briefing,
-                }
-                _enqueue_pending_prompt(session_name, queued_payload)
-
-                def queued_stream():
-                    evt = {"type": "item.completed", "item": {"type": "agent_message", "text": "Queued: message will run after the current response finishes."}}
-                    yield f"data: stdout:{json.dumps(evt)}\n\n"
-                    yield "event: done\ndata: queued=1\n\n"
-
-                return Response(queued_stream(), mimetype="text/event-stream; charset=utf-8")
-        else:
-            if not prompt or not isinstance(prompt, str):
-                return jsonify({"error": "prompt must be a non-empty string"}), 400
-            job = _Job(
-                job_key,
-                session_name,
-                prompt,
-                cwd,
-                extra_args,
-                timeout_sec,
-                resume_session_id,
-                resume_last,
-                json_events,
-                provider,
-                context_briefing=context_briefing,
-            )
-            _JOBS[job_key] = job
+    def setup_job():
+        try:
+            cwd = _safe_cwd(body.get("cwd"))
+            local_resume_last = resume_last
+            # Capture current state BEFORE resolving provider (for context detection)
+            current_provider_before = None
+            current_session_id_before = None
             if session_name:
+                current_provider_before = _get_session_provider_for_name(session_name)
+                with _SESSION_LOCK:
+                    data = _load_sessions()
+                    record = data.get(session_name) or {}
+                    session_ids = record.get("session_ids") or {}
+                    # Get session ID for CURRENT provider (before switch)
+                    current_session_id_before = session_ids.get(current_provider_before)
+            if not resume_session_id and session_name:
+                local_resume_id = _get_session_id_for_name(session_name)
+            else:
+                local_resume_id = resume_session_id
+            provider = _resolve_provider(session_name, requested_provider)
+            if provider == "gemini" and local_resume_id and local_resume_id.startswith("gemini-") and not resume_last:
+                local_resume_id = None
+            if session_name:
+                _touch_session(session_name)
+
+            # Check if we're switching providers and need to generate context
+            if session_name and current_provider_before and provider != current_provider_before:
+                with _SESSION_LOCK:
+                    data = _load_sessions()
+                    record = data.get(session_name) or {}
+                    session_ids = record.get("session_ids") or {}
+                    new_provider_session_id = session_ids.get(provider)
+                if not new_provider_session_id and current_session_id_before:
+                    try:
+                        config = _get_provider_config()
+                        workdir = record.get("workdir")
+                        summary = _generate_session_summary(
+                            current_provider_before,
+                            current_session_id_before,
+                            session_name,
+                            config,
+                            workdir,
+                        )
+                        _append_context_briefing(session_name, summary, current_provider_before, provider)
+                    except Exception:
+                        pass
+
+            # Load context briefing for new provider sessions (when provider just switched)
+            context_briefing = None
+            if session_name:
+                with _SESSION_LOCK:
+                    data = _load_sessions()
+                    record = data.get(session_name) or {}
+                    session_ids = record.get("session_ids") or {}
+                    provider_has_session = session_ids.get(provider)
+                if not provider_has_session:
+                    context_briefing = _load_session_context(session_name)
+                # Gemini resume should use --resume latest only when a prior session exists with history.
+                if provider == "gemini" and provider_has_session and not local_resume_last:
+                    local_resume_last = _session_has_history(session_name, "gemini")
+
+            job_key = f"{provider}:{session_name or local_resume_id or f'anon-{uuid.uuid4().hex}'}"
+            job_to_start = None
+            set_running = False
+            with _JOB_LOCK:
+                existing = _JOBS.get(job_key)
+                if existing and not existing.done.is_set():
+                    if attach or not prompt:
+                        job = existing
+                    else:
+                        queued_payload = {
+                            "prompt": prompt,
+                            "provider": provider,
+                            "cwd": cwd,
+                            "extra_args": extra_args,
+                            "timeout_sec": timeout_sec,
+                            "resume_last": local_resume_last,
+                            "json_events": json_events,
+                            "context_briefing": context_briefing,
+                        }
+                        _enqueue_pending_prompt(session_name, queued_payload)
+                        job_holder["error"] = "queued"
+                        ready.set()
+                        return
+                else:
+                    if not prompt or not isinstance(prompt, str):
+                        job_holder["error"] = "prompt must be a non-empty string"
+                        ready.set()
+                        return
+                    job = _Job(
+                        job_key,
+                        session_name,
+                        prompt,
+                        cwd,
+                        extra_args,
+                        timeout_sec,
+                        local_resume_id,
+                        local_resume_last,
+                        json_events,
+                        provider,
+                        context_briefing=context_briefing,
+                    )
+                    _JOBS[job_key] = job
+                    job_to_start = job
+                    set_running = bool(session_name)
+            if set_running:
                 _set_session_status(session_name, "running")
-            _start_job(job)
+            if job_to_start:
+                _start_job(job_to_start)
+                job = job_to_start
+            job_holder["job"] = job
+        except ValueError as exc:
+            job_holder["error"] = str(exc)
+        except RuntimeError as exc:
+            job_holder["error"] = str(exc)
+        except Exception as exc:
+            job_holder["error"] = str(exc)
+        finally:
+            ready.set()
+
+    threading.Thread(target=setup_job, daemon=True).start()
 
     def generate():
+        yield "event: open\ndata: {}\n\n"
+        start = time.monotonic()
+        while not ready.is_set():
+            yield "event: ping\ndata: {}\n\n"
+            time.sleep(0.5)
+            if time.monotonic() - start > 10:
+                yield "event: status\ndata: {\"status\":\"initializing\"}\n\n"
+                start = time.monotonic()
+        if job_holder.get("error") == "queued":
+            evt = {"type": "item.completed", "item": {"type": "agent_message", "text": "Queued: message will run after the current response finishes."}}
+            yield f"data: stdout:{json.dumps(evt)}\n\n"
+            yield "event: done\ndata: queued=1\n\n"
+            return
+        if job_holder.get("error"):
+            yield f"event: error\ndata: {job_holder.get('error')}\n\n"
+            yield "event: done\ndata: error\n\n"
+            return
+        job = job_holder.get("job")
         subscriber = queue.Queue(maxsize=200)
         snapshot = job.add_subscriber_with_snapshot(subscriber)
         try:
@@ -4483,9 +4678,19 @@ def stream_codex():
                 except queue.Empty:
                     if job.done.is_set():
                         break
+                    # Keep SSE connection alive while waiting for first output.
+                    yield "event: ping\ndata: {}\n\n"
         finally:
             job.remove_subscriber(subscriber)
 
+    return Response(generate(), mimetype="text/event-stream; charset=utf-8")
+
+
+@APP.get("/stream/health")
+def stream_health():
+    def generate():
+        yield "event: open\ndata: {}\n\n"
+        yield "event: done\ndata: ok\n\n"
     return Response(generate(), mimetype="text/event-stream; charset=utf-8")
 
 
@@ -4520,6 +4725,7 @@ def stream_master():
         q = queue.Queue(maxsize=100)
         _MASTER_SUBSCRIBERS.add(q)
         try:
+            yield "event: open\ndata: {}\n\n"
             snapshot = _build_master_snapshot()
             yield f"data: {json.dumps({'type': 'snapshot', **snapshot})}\n\n"
             while True:
