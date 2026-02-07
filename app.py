@@ -167,7 +167,28 @@ def _resolve_copilot_path(config):
 
 
 def _resolve_gemini_path(config):
-    return config.get("gemini_path") or shutil.which("gemini") or shutil.which("gemini.cmd")
+    configured = (config.get("gemini_path") or "").strip()
+    if configured:
+        return configured
+    path = shutil.which("gemini") or shutil.which("gemini.cmd")
+    if path:
+        return path
+    # Common Windows npm install locations
+    candidates = [
+        pathlib.Path(os.environ.get("APPDATA", "")) / "npm" / "gemini.cmd",
+        pathlib.Path(os.environ.get("APPDATA", "")) / "npm" / "gemini",
+        pathlib.Path(os.environ.get("USERPROFILE", "")) / "AppData" / "Roaming" / "npm" / "gemini.cmd",
+        pathlib.Path(os.environ.get("USERPROFILE", "")) / "AppData" / "Roaming" / "npm" / "gemini",
+        pathlib.Path(os.environ.get("ProgramFiles", "")) / "nodejs" / "gemini.cmd",
+        pathlib.Path(os.environ.get("ProgramFiles", "")) / "nodejs" / "gemini",
+    ]
+    for candidate in candidates:
+        try:
+            if candidate and candidate.exists():
+                return str(candidate)
+        except Exception:
+            continue
+    return None
 
 def _resolve_claude_path(config):
     return config.get("claude_path") or shutil.which("claude") or shutil.which("claude.cmd")
@@ -180,6 +201,8 @@ def _resolve_npx_path():
         r"C:\Program Files\nodejs\npx",
         os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm", "npx.cmd"),
         os.path.join(os.path.expanduser("~"), "AppData", "Roaming", "npm", "npx"),
+        "/usr/local/bin/npx",
+        "/opt/homebrew/bin/npx",
     ]
     for candidate in candidates:
         if candidate and os.path.exists(candidate):
@@ -1050,6 +1073,37 @@ def _build_tasks_snapshot():
     return {"count": len(ordered), "tasks": ordered}
 
 
+_TASK_STREAMS_LOCK = threading.Lock()
+_TASK_STREAMS = {}
+
+
+def _task_stream_subscribe(task_id):
+    q = queue.Queue()
+    with _TASK_STREAMS_LOCK:
+        _TASK_STREAMS.setdefault(task_id, []).append(q)
+
+    def unsubscribe():
+        with _TASK_STREAMS_LOCK:
+            queues = _TASK_STREAMS.get(task_id) or []
+            if q in queues:
+                queues.remove(q)
+            if not queues and task_id in _TASK_STREAMS:
+                _TASK_STREAMS.pop(task_id, None)
+
+    return q, unsubscribe
+
+
+def _task_stream_publish(task_id, event, data=None):
+    payload = {"event": event, "data": data or {}}
+    with _TASK_STREAMS_LOCK:
+        queues = list(_TASK_STREAMS.get(task_id) or [])
+    for q in queues:
+        try:
+            q.put_nowait(payload)
+        except Exception:
+            continue
+
+
 def _migrate_legacy_files():
     """Migrate old .codex_ prefixed files to new names."""
     migrations = [
@@ -1855,6 +1909,11 @@ Previous conversation history from other providers:
         args.extend(["--resume", "latest"])
     
     # Use stdin for multi-line prompt support (NOT command-line arg)
+    env = os.environ.copy()
+    if not env.get("GEMINI_API_KEY"):
+        api_key = _get_gemini_api_key_from_settings(cwd)
+        if api_key:
+            env["GEMINI_API_KEY"] = api_key
     proc = subprocess.Popen(
         args,
         cwd=cwd,
@@ -1863,6 +1922,7 @@ Previous conversation history from other providers:
         stderr=subprocess.PIPE,
         text=True,
         encoding="utf-8",
+        env=env,
     )
     try:
         stdout, stderr = proc.communicate(input=prompt + "\n", timeout=timeout_sec)
@@ -1875,25 +1935,141 @@ Previous conversation history from other providers:
     return _filter_debug_messages((stdout or "").strip())
 
 
+def _run_gemini_exec_stream(prompt, config, timeout_sec=300, cwd=None, on_output=None, on_error=None):
+    gemini_path = _resolve_gemini_path(config)
+    if not gemini_path:
+        raise FileNotFoundError("gemini CLI not found")
+
+    _ensure_gemini_policy()
+
+    args = [gemini_path]
+    env = os.environ.copy()
+    if not env.get("GEMINI_API_KEY"):
+        api_key = _get_gemini_api_key_from_settings(cwd)
+        if api_key:
+            env["GEMINI_API_KEY"] = api_key
+
+    proc = subprocess.Popen(
+        args,
+        cwd=cwd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        bufsize=1,
+        env=env,
+    )
+    if prompt:
+        proc.stdin.write(prompt + "\n")
+        proc.stdin.flush()
+        proc.stdin.close()
+
+    q = queue.Queue()
+    t_out = threading.Thread(target=_enqueue_output, args=(proc.stdout, q, "stdout"))
+    t_err = threading.Thread(target=_enqueue_output, args=(proc.stderr, q, "stderr"))
+    t_out.daemon = True
+    t_err.daemon = True
+    t_out.start()
+    t_err.start()
+
+    stdout_lines = []
+    stderr_lines = []
+    start = time.monotonic()
+    while True:
+        try:
+            label, line = q.get(timeout=0.25)
+            line_text = line.rstrip("\n")
+            if label == "stdout":
+                if line_text:
+                    stdout_lines.append(line_text)
+                    if on_output:
+                        on_output(line_text)
+            else:
+                if line_text:
+                    stderr_lines.append(line_text)
+                    if on_error:
+                        on_error(line_text)
+        except queue.Empty:
+            if proc.poll() is not None:
+                break
+            if time.monotonic() - start > timeout_sec:
+                proc.kill()
+                raise RuntimeError("gemini CLI timed out")
+
+    proc.wait()
+    if proc.returncode != 0:
+        combined = "\n".join(stderr_lines) or "\n".join(stdout_lines) or "gemini CLI failed"
+        raise RuntimeError(_filter_debug_messages(combined).strip())
+
+    output = _filter_debug_messages("\n".join(stdout_lines).strip())
+    return output
+
+
 def _ensure_gemini_policy():
     """Ensure Gemini CLI policy allows delegate_to_agent in non-interactive mode."""
     try:
         policy_dir = pathlib.Path.home() / ".gemini" / "policies"
         policy_dir.mkdir(parents=True, exist_ok=True)
         policy_path = policy_dir / "bil-dir.toml"
-        if policy_path.exists():
-            return
         policy_path.write_text(
             """[[rule]]
 toolName = "delegate_to_agent"
 decision = "allow"
 priority = 100
+
+[[rule]]
+toolName = "brave-search"
+decision = "allow"
+priority = 90
+
+[[rule]]
+toolName = "brave_web_search"
+decision = "allow"
+priority = 90
+
+[[rule]]
+toolName = "brave_local_search"
+decision = "allow"
+priority = 90
 """,
             encoding="utf-8",
         )
     except Exception:
         # Best effort: do not block Gemini if policy can't be written
         return
+
+
+def _get_gemini_api_key_from_settings(cwd=None):
+    def _read_settings(path):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        auth = data.get("auth")
+        if isinstance(auth, dict):
+            key = (auth.get("api_key") or "").strip()
+            if key:
+                return key
+        key = (data.get("api_key") or "").strip()
+        if key:
+            return key
+        return ""
+
+    # Prefer project-level settings in cwd/.gemini/settings.json
+    if cwd:
+        candidate = pathlib.Path(cwd) / ".gemini" / "settings.json"
+        if candidate.exists():
+            key = _read_settings(candidate)
+            if key:
+                return key
+    # Fall back to user-level ~/.gemini/settings.json
+    home_settings = pathlib.Path.home() / ".gemini" / "settings.json"
+    if home_settings.exists():
+        return _read_settings(home_settings)
+    return ""
 
 
 def _get_latest_claude_session_id(cwd=None):
@@ -2103,6 +2279,68 @@ Previous conversation history from other providers:
     return _clean_claude_output(output)
 
 
+def _run_claude_exec_stream(prompt, config, timeout_sec=300, cwd=None, on_output=None, on_error=None):
+    claude_path = _resolve_claude_path(config)
+    if not claude_path:
+        raise FileNotFoundError("claude CLI not found")
+
+    args = [claude_path, "--dangerously-skip-permissions"]
+    proc = subprocess.Popen(
+        args,
+        cwd=cwd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        bufsize=1,
+    )
+    if prompt:
+        proc.stdin.write(prompt + "\n")
+        proc.stdin.flush()
+        proc.stdin.close()
+
+    q = queue.Queue()
+    t_out = threading.Thread(target=_enqueue_output, args=(proc.stdout, q, "stdout"))
+    t_err = threading.Thread(target=_enqueue_output, args=(proc.stderr, q, "stderr"))
+    t_out.daemon = True
+    t_err.daemon = True
+    t_out.start()
+    t_err.start()
+
+    stdout_lines = []
+    stderr_lines = []
+    start = time.monotonic()
+    while True:
+        try:
+            label, line = q.get(timeout=0.25)
+            line_text = line.rstrip("\n")
+            if label == "stdout":
+                if line_text:
+                    stdout_lines.append(line_text)
+                    if on_output:
+                        on_output(line_text)
+            else:
+                if line_text:
+                    stderr_lines.append(line_text)
+                    if on_error:
+                        on_error(line_text)
+        except queue.Empty:
+            if proc.poll() is not None:
+                break
+            if time.monotonic() - start > timeout_sec:
+                proc.kill()
+                raise RuntimeError("claude CLI timed out")
+
+    proc.wait()
+    if proc.returncode != 0:
+        combined = "\n".join(stderr_lines) or "\n".join(stdout_lines) or "claude CLI failed"
+        raise RuntimeError(_filter_debug_messages(combined).strip())
+
+    output = _filter_debug_messages("\n".join(stdout_lines).strip())
+    return _clean_claude_output(output)
+
+
 def _clean_claude_output(text):
     """Clean Claude Code output by removing tool execution markers.
 
@@ -2279,6 +2517,15 @@ def gmail_reauth():
         if os.name == "nt":
             console_cmd = ["cmd", "/c", "start"] + cmd
             subprocess.Popen(console_cmd, cwd=DEFAULT_CWD)
+        elif sys.platform == "darwin":
+            # Open a new Terminal window on macOS to show the auth flow
+            full_cmd = " ".join(cmd)
+            osa_cmd = [
+                "osascript",
+                "-e",
+                f'tell application "Terminal" to do script "{full_cmd}"'
+            ]
+            subprocess.Popen(osa_cmd, cwd=DEFAULT_CWD)
         else:
             subprocess.Popen(
                 cmd,
@@ -2607,6 +2854,38 @@ def task_view(task_id):
         gmail_status=gmail_status,
         task_mentions_gmail=task_mentions_gmail,
     )
+
+
+@APP.get("/tasks/<task_id>")
+def get_task(task_id):
+    with _TASK_LOCK:
+        tasks = _load_tasks()
+    task = tasks.get(task_id)
+    if not task:
+        return jsonify({"error": "not found"}), 404
+
+    updated_task = False
+    if task.get("last_output") and not task.get("last_output_raw"):
+        raw = task.get("last_output")
+        cleaned = _extract_codex_assistant_output(raw)
+        task["last_output_raw"] = raw
+        if cleaned != raw:
+            task["last_output"] = cleaned
+        updated_task = True
+    task = _ensure_task_history(task)
+    if task.get("run_history") and tasks.get(task_id, {}).get("run_history") != task.get("run_history"):
+        updated_task = True
+    if updated_task:
+        with _TASK_LOCK:
+            tasks = _load_tasks()
+            tasks[task["id"]] = task
+            _save_tasks(tasks)
+
+    output_history_text = _build_task_history_text(task.get("run_history"), "output")
+    raw_history_text = _build_task_history_text(task.get("run_history"), "raw_output")
+    task["output_history_text"] = output_history_text or (task.get("last_output") or "")
+    task["raw_output_history_text"] = raw_history_text or (task.get("last_output_raw") or "")
+    return jsonify({"task": task})
 
 
 @APP.get("/task/new")
@@ -3204,6 +3483,11 @@ def _start_codex_job(job):
             job.context_briefing,
         )
         try:
+            env = os.environ.copy()
+            if not env.get("GEMINI_API_KEY"):
+                api_key = _get_gemini_api_key_from_settings(job.cwd)
+                if api_key:
+                    env["GEMINI_API_KEY"] = api_key
             proc = subprocess.Popen(
                 args,
                 cwd=job.cwd,
@@ -3213,6 +3497,7 @@ def _start_codex_job(job):
                 text=True,
                 encoding="utf-8",
                 bufsize=1,
+                env=env,
             )
             # Write prompt to stdin for multi-line support
             proc.stdin.write(prompt + '\n')
@@ -3625,19 +3910,27 @@ Previous conversation history from other providers:
             args.extend(["--session-id", job.session_id])
         elif job.resume_last:
             args.append("--continue")
-        
-        # Add prompt flag last
-        args.extend(["-p", prompt])
         try:
+            env = os.environ.copy()
+            if not env.get("GEMINI_API_KEY"):
+                api_key = _get_gemini_api_key_from_settings(job.cwd)
+                if api_key:
+                    env["GEMINI_API_KEY"] = api_key
             proc = subprocess.Popen(
                 args,
                 cwd=job.cwd,
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 encoding="utf-8",
                 bufsize=1,
+                env=env,
             )
+            if prompt:
+                proc.stdin.write(prompt + "\n")
+                proc.stdin.flush()
+                proc.stdin.close()
         except FileNotFoundError:
             _broadcast_error(job, "claude CLI not found in PATH")
             job.done.set()
@@ -3827,6 +4120,8 @@ def _run_task_async(task_id, force_run=False):
                     task["last_status"] = "running"
                     _save_tasks(tasks)
             _broadcast_tasks_snapshot()
+            if task:
+                _task_stream_publish(task_id, "status", {"status": "running"})
 
             if not task:
                 return
@@ -3841,7 +4136,38 @@ def _run_task_async(task_id, force_run=False):
                 _broadcast_tasks_snapshot()
                 return
 
-            result = _run_task_exec(task)
+            provider = (task.get("provider") or DEFAULT_PROVIDER).lower()
+            live_chunks = []
+
+            def on_output(line):
+                live_chunks.append(line)
+                _task_stream_publish(task_id, "output", {"text": line})
+
+            def on_error(line):
+                _task_stream_publish(task_id, "stderr", {"text": line})
+
+            if provider == "gemini":
+                text = _run_gemini_exec_stream(
+                    (task.get("prompt") or "").strip(),
+                    config=_get_provider_config(),
+                    cwd=_safe_cwd((task.get("workdir") or "").strip() or None),
+                    timeout_sec=task.get("timeout_sec", 900),
+                    on_output=on_output,
+                    on_error=on_error,
+                )
+                result = {"output": text, "raw_output": text}
+            elif provider == "claude":
+                text = _run_claude_exec_stream(
+                    (task.get("prompt") or "").strip(),
+                    config=_get_provider_config(),
+                    cwd=_safe_cwd((task.get("workdir") or "").strip() or None),
+                    timeout_sec=task.get("timeout_sec", 900),
+                    on_output=on_output,
+                    on_error=on_error,
+                )
+                result = {"output": text, "raw_output": text}
+            else:
+                result = _run_task_exec(task)
             runtime_sec = time.time() - started_ts
             _mark_task_run(
                 task_id,
@@ -3851,9 +4177,11 @@ def _run_task_async(task_id, force_run=False):
                 runtime_sec=runtime_sec,
                 started_at=started_at,
             )
+            _task_stream_publish(task_id, "done", {"status": "ok"})
         except Exception as exc:
             runtime_sec = time.time() - started_ts
             _mark_task_run(task_id, "error", error=str(exc), runtime_sec=runtime_sec, started_at=started_at)
+            _task_stream_publish(task_id, "done", {"status": "error", "error": str(exc)})
 
     thread = threading.Thread(target=runner, daemon=True)
     thread.start()
@@ -4434,6 +4762,27 @@ def delete_task(task_id):
         _broadcast_tasks_snapshot()
         return jsonify({"deleted": task_id})
     return jsonify({"error": "not found"}), 404
+
+
+@APP.get("/tasks/<task_id>/stream")
+def task_stream(task_id):
+    def event_stream():
+        q, unsubscribe = _task_stream_subscribe(task_id)
+        try:
+            yield "event: hello\ndata: {}\n\n"
+            while True:
+                try:
+                    payload = q.get(timeout=10)
+                except queue.Empty:
+                    yield "event: ping\ndata: {}\n\n"
+                    continue
+                event = payload.get("event", "message")
+                data = payload.get("data", {})
+                yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
+        finally:
+            unsubscribe()
+
+    return Response(event_stream(), mimetype="text/event-stream")
 
 
 @APP.post("/sessions/<name>/provider")

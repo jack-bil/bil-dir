@@ -1983,15 +1983,15 @@
             </div>
           </form>
           {% if selected_task.output_history_text %}
-          <div class="task-output-section">
+          <div class="task-output-section" id="taskOutputSection">
             <h3>Output</h3>
-            <pre class="task-output-content">{{ selected_task.output_history_text }}</pre>
+            <pre class="task-output-content" id="taskOutputContent">{{ selected_task.output_history_text }}</pre>
           </div>
           {% endif %}
           {% if selected_task.raw_output_history_text %}
-          <details class="task-output-section">
+          <details class="task-output-section" id="taskRawOutputSection">
             <summary>Raw output</summary>
-            <pre class="task-output-content">{{ selected_task.raw_output_history_text }}</pre>
+            <pre class="task-output-content" id="taskRawOutputContent">{{ selected_task.raw_output_history_text }}</pre>
           </details>
           {% endif %}
         </div>
@@ -4174,7 +4174,10 @@
         if (!window.EventSource) {
           fetch("/tasks")
             .then((resp) => resp.json())
-            .then((data) => renderTasks(data.tasks || []))
+            .then((data) => {
+              renderTasks(data.tasks || []);
+              refreshTaskDetailIfNeeded(data.tasks || []);
+            })
             .catch(() => {});
           return;
         }
@@ -4189,6 +4192,7 @@
           try {
             const data = JSON.parse(event.data || "{}");
             renderTasks(data.tasks || []);
+            refreshTaskDetailIfNeeded(data.tasks || []);
           } catch (err) {
             // ignore
           }
@@ -4201,6 +4205,114 @@
       // Start task stream for live status updates
       // Always run to show task status, even when viewing a specific task
       const viewMode = "{{ view_mode if view_mode else '' }}";
+      const selectedTaskId = "{{ selected_task.id if selected_task else '' }}";
+      let taskDetailLastSig = null;
+      let taskDetailStream = null;
+
+      async function refreshTaskDetailIfNeeded(tasks) {
+        if (!selectedTaskId) return;
+        const task = (tasks || []).find((t) => t.id === selectedTaskId);
+        if (!task) return;
+        const sig = `${task.last_run || ""}|${task.last_status || ""}|${(task.last_output || "").length}|${task.last_error || ""}`;
+        if (sig === taskDetailLastSig) return;
+        taskDetailLastSig = sig;
+        try {
+          const resp = await fetch(`/tasks/${encodeURIComponent(selectedTaskId)}`);
+          if (!resp.ok) return;
+          const data = await resp.json();
+          const fullTask = data.task || {};
+          updateTaskOutputSections(fullTask);
+        } catch (err) {
+          // ignore
+        }
+      }
+
+      function updateTaskOutputSections(task) {
+        const detailView = document.getElementById("taskDetailView");
+        if (!detailView) return;
+        const outputText = (task.output_history_text || task.last_output || "").trim();
+        const rawText = (task.raw_output_history_text || task.last_output_raw || "").trim();
+
+        let outputSection = document.getElementById("taskOutputSection");
+        if (!outputSection) {
+          outputSection = document.createElement("div");
+          outputSection.className = "task-output-section";
+          outputSection.id = "taskOutputSection";
+          const h3 = document.createElement("h3");
+          h3.textContent = "Output";
+          const pre = document.createElement("pre");
+          pre.className = "task-output-content";
+          pre.id = "taskOutputContent";
+          outputSection.appendChild(h3);
+          outputSection.appendChild(pre);
+          detailView.appendChild(outputSection);
+        }
+        const outputContent = document.getElementById("taskOutputContent");
+        if (outputContent) outputContent.textContent = outputText;
+        outputSection.style.display = outputText ? "" : "none";
+
+        let rawSection = document.getElementById("taskRawOutputSection");
+        if (!rawSection) {
+          rawSection = document.createElement("details");
+          rawSection.className = "task-output-section";
+          rawSection.id = "taskRawOutputSection";
+          const summary = document.createElement("summary");
+          summary.textContent = "Raw output";
+          const pre = document.createElement("pre");
+          pre.className = "task-output-content";
+          pre.id = "taskRawOutputContent";
+          rawSection.appendChild(summary);
+          rawSection.appendChild(pre);
+          detailView.appendChild(rawSection);
+        }
+        const rawContent = document.getElementById("taskRawOutputContent");
+        if (rawContent) rawContent.textContent = rawText;
+        rawSection.style.display = rawText ? "" : "none";
+      }
+
+      function appendTaskLiveOutput(text, kind) {
+        if (!text) return;
+        const detailView = document.getElementById("taskDetailView");
+        if (!detailView) return;
+        let outputSection = document.getElementById("taskOutputSection");
+        if (!outputSection) {
+          updateTaskOutputSections({ output_history_text: "", raw_output_history_text: "" });
+          outputSection = document.getElementById("taskOutputSection");
+        }
+        const outputContent = document.getElementById("taskOutputContent");
+        if (!outputContent) return;
+        const prefix = kind === "stderr" ? "[stderr] " : "";
+        outputContent.textContent = `${outputContent.textContent}${outputContent.textContent ? "\n" : ""}${prefix}${text}`;
+      }
+
+      function wireTaskDetailStream() {
+        if (!selectedTaskId || !window.EventSource) return;
+        if (taskDetailStream) return;
+        taskDetailStream = new EventSource(`/tasks/${encodeURIComponent(selectedTaskId)}/stream`);
+        taskDetailStream.addEventListener("output", (event) => {
+          try {
+            const data = JSON.parse(event.data || "{}");
+            appendTaskLiveOutput(data.text || "", "stdout");
+          } catch (err) {
+            // ignore
+          }
+        });
+        taskDetailStream.addEventListener("stderr", (event) => {
+          try {
+            const data = JSON.parse(event.data || "{}");
+            appendTaskLiveOutput(data.text || "", "stderr");
+          } catch (err) {
+            // ignore
+          }
+        });
+        taskDetailStream.addEventListener("done", (event) => {
+          taskDetailStream.close();
+          taskDetailStream = null;
+        });
+        window.addEventListener("beforeunload", () => {
+          if (taskDetailStream) taskDetailStream.close();
+        });
+      }
       wireTaskStream();
       renderOrchestrators(initialOrchestrators || []);
       refreshOrchestrators();
@@ -4220,6 +4332,7 @@
         const scheduleWeeklyFields = document.getElementById("scheduleWeeklyFields");
         const scheduleMonthlyFields = document.getElementById("scheduleMonthlyFields");
         const taskPickWorkdir = document.getElementById("taskPickWorkdir");
+        wireTaskDetailStream();
 
         function updateScheduleFieldsVisibility() {
           if (!taskEditScheduleType) return;

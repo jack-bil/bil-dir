@@ -31,7 +31,7 @@ On first run, bil-dir will automatically:
 If you don't have Node.js installed, get it from [nodejs.org](https://nodejs.org/) (required for MCP servers).
 
 ### First Run
-When you first run the app, it will automatically create these files in the project directory:
+When you first run the app, it will automatically create these files in the project directory as needed:
 - `sessions.json` - Session storage
 - `tasks.json` - Task storage
 - `orchestrators.json` - Orchestrator storage
@@ -42,7 +42,7 @@ When you first run the app, it will automatically create these files in the proj
 - `providers/config.toml` - Provider-specific MCP config
 - `context/` - Context files directory
 
-These files are git-ignored and will be created with default values on first startup. The repo ships empty `history.json` and `log.jsonl` to avoid leaking sensitive data.
+These files are git-ignored and will be created with default values on first startup.
 
 ## Prereqs
 - Python 3.10+ (3.11/3.12 ok)
@@ -78,6 +78,7 @@ Gemini and Claude run locally through their CLIs (no HTTP API calls from the app
 Open `/config` and use the tabs:
 - **General**: CLI availability + CLI paths. Set a default working directory.
 - **Permissions**: Per-model full-permissions toggles and sandbox mode.
+- **Orchestrator**: Base manager prompt and reset to defaults.
 - **MCP**: Configure MCP servers for all providers. Add any MCP server (brave-search, gmail, custom servers, etc.)
 
 ### MCP Configuration Management
@@ -139,8 +140,6 @@ On first run, bil-dir automatically:
 | **Copilot** | ✅ | ✅ | `~/.copilot/mcp-config.json` |
 | **Claude** | ✅ | ✅ | `~/.claude.json` |
 | **Gemini** | ✅ | ✅ | `.gemini/settings.json` (project-level) |
-
-See `MCP_ALL_PROVIDERS.md` for detailed documentation.
 
 ## Usage
 Health check:
