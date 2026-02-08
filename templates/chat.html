@@ -1484,12 +1484,14 @@
           transition: transform 0.25s ease;
           z-index: 25;
           padding: 16px;
-          overflow-y: auto;
+          overflow: hidden;
           background: var(--panel);
           border-right: 1px solid var(--border);
         }
         .search-panel {
-          top: 8px;
+          position: sticky;
+          top: 0;
+          background: var(--panel);
         }
         .sessions {
           position: static;
@@ -1497,16 +1499,10 @@
           width: 100%;
           height: auto;
           padding: 0;
-          overflow: visible;
+          overflow-y: auto;
           background: transparent;
-        }
-        .sessions .section-header {
-          position: sticky;
-          top: -16px;
-          background: var(--panel);
-          z-index: 10;
-          padding: 8px 0;
-          margin: 0 0 10px 0;
+          flex: 1;
+          min-height: 0;
         }
         .sessions .section-body {
           overflow-y: visible;
@@ -2896,6 +2892,46 @@
           promptInput.focus();
         }
         requestAnimationFrame(() => scrollToBottom());
+      }
+
+      const leftCol = document.querySelector(".left-col");
+      if (leftCol) {
+        const getSessionsPanel = () => document.querySelector(".sessions");
+        leftCol.addEventListener("wheel", (e) => {
+          const sessionsPanel = getSessionsPanel();
+          if (!sessionsPanel) return;
+          if (sessionsPanel.contains(e.target)) return;
+          sessionsPanel.scrollTop += e.deltaY;
+          e.preventDefault();
+        }, { passive: false });
+
+        let navTouchY = null;
+        leftCol.addEventListener("touchstart", (e) => {
+          const touch = e.touches && e.touches[0];
+          if (!touch) return;
+          const sessionsPanel = getSessionsPanel();
+          if (sessionsPanel && sessionsPanel.contains(e.target)) return;
+          navTouchY = touch.clientY;
+        }, { passive: true });
+
+        leftCol.addEventListener("touchmove", (e) => {
+          if (navTouchY === null) return;
+          const touch = e.touches && e.touches[0];
+          if (!touch) return;
+          const sessionsPanel = getSessionsPanel();
+          if (!sessionsPanel) return;
+          const delta = navTouchY - touch.clientY;
+          navTouchY = touch.clientY;
+          sessionsPanel.scrollTop += delta;
+          e.preventDefault();
+        }, { passive: false });
+
+        leftCol.addEventListener("touchend", () => {
+          navTouchY = null;
+        });
+        leftCol.addEventListener("touchcancel", () => {
+          navTouchY = null;
+        });
       }
 
       function setWorkdir(path) {
