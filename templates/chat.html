@@ -1278,6 +1278,7 @@
         cursor: pointer;
       }
       .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      .row.hidden { display: none !important; }
       .muted { color: var(--muted); }
       .resume-btn {
         padding: 6px 10px;
@@ -2017,7 +2018,7 @@
               <input type="checkbox" id="taskEnabled" name="taskEnabled" {% if selected_task.enabled %}checked{% endif %} />
               <label for="taskEnabled">Enabled</label>
             </div>
-            <div class="row">
+            <div class="row hidden" id="taskEditActions">
               <button type="submit" class="primary-btn">Save Changes</button>
               <button type="button" class="secondary-btn" id="cancelTaskEdit">Cancel</button>
             </div>
@@ -2050,8 +2051,9 @@
               {% if not selected_orchestrator.goal %}
               <div class="muted" style="margin-top:8px;">No goal set.</div>
               {% endif %}
-              <div class="row" style="margin-top:10px;">
+              <div class="row hidden" style="margin-top:10px;" id="orchGoalActions">
                 <button type="button" class="primary-btn" id="orchSaveBtn">Save goal</button>
+                <button type="button" class="secondary-btn" id="orchCancelGoalBtn">Cancel</button>
               </div>
             </div>
           </div>
@@ -2070,8 +2072,9 @@
                   <div class="muted">No sessions available.</div>
                 {% endif %}
               </div>
-              <div class="row" style="margin-top:10px;">
+              <div class="row hidden" style="margin-top:10px;" id="orchManagedActions">
                 <button type="button" class="primary-btn" id="orchSaveManagedBtn">Save managed sessions</button>
+                <button type="button" class="secondary-btn" id="orchCancelManagedBtn">Cancel</button>
               </div>
             </div>
           </div>
@@ -2739,6 +2742,71 @@
 
       const orchSaveBtn = document.getElementById("orchSaveBtn");
       const orchGoalEdit = document.getElementById("orchGoalEdit");
+      const orchCancelGoalBtn = document.getElementById("orchCancelGoalBtn");
+      const orchGoalActions = document.getElementById("orchGoalActions");
+      const orchSaveManagedBtn = document.getElementById("orchSaveManagedBtn");
+      const orchCancelManagedBtn = document.getElementById("orchCancelManagedBtn");
+      const orchManagedList = document.getElementById("orchManagedList");
+      const orchManagedActions = document.getElementById("orchManagedActions");
+      let initialOrchGoal = null;
+      let initialOrchManaged = null;
+
+      function getManagedSelections() {
+        if (!orchManagedList) return [];
+        return Array.from(orchManagedList.querySelectorAll("input[type='checkbox']:checked"))
+          .map((cb) => cb.value)
+          .sort();
+      }
+
+      function updateOrchGoalActions() {
+        if (!orchGoalActions || !orchGoalEdit) return;
+        const current = orchGoalEdit.value.trim();
+        if (initialOrchGoal === null) return;
+        if (current !== initialOrchGoal) {
+          orchGoalActions.classList.remove("hidden");
+        } else {
+          orchGoalActions.classList.add("hidden");
+        }
+      }
+
+      function updateOrchManagedActions() {
+        if (!orchManagedActions) return;
+        if (!initialOrchManaged) return;
+        const current = JSON.stringify(getManagedSelections());
+        if (current !== initialOrchManaged) {
+          orchManagedActions.classList.remove("hidden");
+        } else {
+          orchManagedActions.classList.add("hidden");
+        }
+      }
+
+      function resetOrchGoal() {
+        if (orchGoalEdit && initialOrchGoal !== null) {
+          orchGoalEdit.value = initialOrchGoal;
+          updateOrchGoalActions();
+        }
+      }
+
+      function resetOrchManaged() {
+        if (!orchManagedList || !initialOrchManaged) return;
+        const initial = JSON.parse(initialOrchManaged);
+        orchManagedList.querySelectorAll("input[type='checkbox']").forEach((cb) => {
+          cb.checked = initial.includes(cb.value);
+        });
+        updateOrchManagedActions();
+      }
+
+      function initOrchDirtyState() {
+        if (orchGoalEdit) {
+          initialOrchGoal = orchGoalEdit.value.trim();
+          updateOrchGoalActions();
+        }
+        if (orchManagedList) {
+          initialOrchManaged = JSON.stringify(getManagedSelections());
+          updateOrchManagedActions();
+        }
+      }
+
       if (orchSaveBtn && orchGoalEdit && selectedOrchId) {
         orchSaveBtn.addEventListener("click", async () => {
           const goal = orchGoalEdit.value.trim();
@@ -2753,20 +2821,24 @@
               alert(data.error || "Failed to update goal");
               return;
             }
+            initialOrchGoal = goal;
+            updateOrchGoalActions();
             refreshOrchestrators();
           } catch (err) {
             console.error("Failed to update goal:", err);
             alert("Failed to update goal");
           }
         });
+        orchGoalEdit.addEventListener("input", updateOrchGoalActions);
       }
 
-      const orchSaveManagedBtn = document.getElementById("orchSaveManagedBtn");
-      const orchManagedList = document.getElementById("orchManagedList");
+      if (orchCancelGoalBtn) {
+        orchCancelGoalBtn.addEventListener("click", resetOrchGoal);
+      }
+
       if (orchSaveManagedBtn && orchManagedList && selectedOrchId) {
         orchSaveManagedBtn.addEventListener("click", async () => {
-          const managed = Array.from(orchManagedList.querySelectorAll("input[type='checkbox']:checked"))
-            .map((cb) => cb.value);
+          const managed = getManagedSelections();
           try {
             const resp = await fetch(`/orchestrators/${encodeURIComponent(selectedOrchId)}`, {
               method: "PATCH",
@@ -2778,11 +2850,24 @@
               alert(data.error || "Failed to update managed sessions");
               return;
             }
+            initialOrchManaged = JSON.stringify(managed);
+            updateOrchManagedActions();
             refreshOrchestrators();
           } catch (err) {
             console.error("Failed to update managed sessions:", err);
             alert("Failed to update managed sessions");
           }
+        });
+        orchManagedList.addEventListener("change", updateOrchManagedActions);
+      }
+
+      if (orchCancelManagedBtn) {
+        orchCancelManagedBtn.addEventListener("click", resetOrchManaged);
+      }
+
+      if (selectedOrchId) {
+        requestAnimationFrame(() => {
+          setTimeout(initOrchDirtyState, 200);
         });
       }
       
@@ -4523,6 +4608,7 @@
         const reauthGmailBtn = document.getElementById("reauthGmailBtn");
         const deleteTaskBtn = document.getElementById("deleteTaskBtn");
         const cancelTaskEdit = document.getElementById("cancelTaskEdit");
+        const taskEditActions = document.getElementById("taskEditActions");
         const taskEditScheduleType = document.getElementById("taskScheduleType");
         const scheduleOnceFields = document.getElementById("scheduleOnceFields");
         const scheduleIntervalFields = document.getElementById("scheduleIntervalFields");
@@ -4531,6 +4617,7 @@
         const scheduleMonthlyFields = document.getElementById("scheduleMonthlyFields");
         const taskPickWorkdir = document.getElementById("taskPickWorkdir");
         wireTaskDetailStream();
+        let initialTaskFormState = null;
 
         function updateScheduleFieldsVisibility() {
           if (!taskEditScheduleType) return;
@@ -4571,6 +4658,114 @@
           // Trigger on page load after DOM is fully ready
           requestAnimationFrame(() => {
             setTimeout(updateScheduleFieldsVisibility, 200);
+          });
+        }
+
+        function getTaskFormState() {
+          const state = {
+            name: (document.getElementById("taskName")?.value || "").trim(),
+            prompt: (document.getElementById("taskCommand")?.value || "").trim(),
+            provider: document.getElementById("taskProvider")?.value || "",
+            workdir: (document.getElementById("taskWorkdir")?.value || "").trim(),
+            enabled: !!document.getElementById("taskEnabled")?.checked,
+            scheduleType: document.getElementById("taskScheduleType")?.value || "manual",
+            schedule: {},
+          };
+          if (state.scheduleType === "once") {
+            state.schedule.date = document.getElementById("taskScheduleDate")?.value || "";
+            state.schedule.time = document.getElementById("taskScheduleOnceTime")?.value || "";
+          } else if (state.scheduleType === "interval") {
+            state.schedule.minutes = document.getElementById("taskScheduleMinutes")?.value || "";
+            state.schedule.start_date = document.getElementById("taskIntervalStartDate")?.value || "";
+            state.schedule.start_time = document.getElementById("taskIntervalStartTime")?.value || "";
+          } else if (state.scheduleType === "daily") {
+            state.schedule.time = document.getElementById("taskScheduleDailyTime")?.value || "";
+            state.schedule.start_date = document.getElementById("taskDailyStartDate")?.value || "";
+            state.schedule.recur_days = document.getElementById("taskDailyRecur")?.value || "";
+          } else if (state.scheduleType === "weekly") {
+            state.schedule.time = document.getElementById("taskScheduleWeeklyTime")?.value || "";
+            state.schedule.start_date = document.getElementById("taskWeeklyStartDate")?.value || "";
+            state.schedule.recur_weeks = document.getElementById("taskWeeklyRecur")?.value || "";
+            state.schedule.days = Array.from(document.querySelectorAll('input[name="weekday"]:checked'))
+              .map((el) => el.value)
+              .sort();
+          } else if (state.scheduleType === "monthly") {
+            state.schedule.time = document.getElementById("taskScheduleMonthlyTime")?.value || "";
+            state.schedule.start_date = document.getElementById("taskMonthlyStartDate")?.value || "";
+            state.schedule.day = document.getElementById("taskScheduleDay")?.value || "";
+            state.schedule.recur_months = document.getElementById("taskMonthlyRecur")?.value || "";
+          }
+          return state;
+        }
+
+        function taskFormIsDirty() {
+          if (!initialTaskFormState) return false;
+          return JSON.stringify(getTaskFormState()) !== initialTaskFormState;
+        }
+
+        function updateTaskEditActionsVisibility() {
+          if (!taskEditActions) return;
+          if (taskFormIsDirty()) {
+            taskEditActions.classList.remove("hidden");
+          } else {
+            taskEditActions.classList.add("hidden");
+          }
+        }
+
+        function resetTaskFormToInitial() {
+          if (!initialTaskFormState) return;
+          const state = JSON.parse(initialTaskFormState);
+          const setValue = (id, val) => {
+            const el = document.getElementById(id);
+            if (el) el.value = val || "";
+          };
+          setValue("taskName", state.name);
+          setValue("taskCommand", state.prompt);
+          setValue("taskProvider", state.provider);
+          setValue("taskWorkdir", state.workdir);
+          const enabledEl = document.getElementById("taskEnabled");
+          if (enabledEl) enabledEl.checked = !!state.enabled;
+          setValue("taskScheduleType", state.scheduleType);
+          updateScheduleFieldsVisibility();
+          if (state.scheduleType === "once") {
+            setValue("taskScheduleDate", state.schedule.date);
+            setValue("taskScheduleOnceTime", state.schedule.time);
+          } else if (state.scheduleType === "interval") {
+            setValue("taskScheduleMinutes", state.schedule.minutes);
+            setValue("taskIntervalStartDate", state.schedule.start_date);
+            setValue("taskIntervalStartTime", state.schedule.start_time);
+          } else if (state.scheduleType === "daily") {
+            setValue("taskScheduleDailyTime", state.schedule.time);
+            setValue("taskDailyStartDate", state.schedule.start_date);
+            setValue("taskDailyRecur", state.schedule.recur_days);
+          } else if (state.scheduleType === "weekly") {
+            setValue("taskScheduleWeeklyTime", state.schedule.time);
+            setValue("taskWeeklyStartDate", state.schedule.start_date);
+            setValue("taskWeeklyRecur", state.schedule.recur_weeks);
+            document.querySelectorAll('input[name="weekday"]').forEach((el) => {
+              el.checked = Array.isArray(state.schedule.days)
+                ? state.schedule.days.includes(el.value)
+                : false;
+            });
+          } else if (state.scheduleType === "monthly") {
+            setValue("taskScheduleMonthlyTime", state.schedule.time);
+            setValue("taskMonthlyStartDate", state.schedule.start_date);
+            setValue("taskScheduleDay", state.schedule.day);
+            setValue("taskMonthlyRecur", state.schedule.recur_months);
+          }
+          updateTaskEditActionsVisibility();
+        }
+
+        function initTaskDirtyState() {
+          initialTaskFormState = JSON.stringify(getTaskFormState());
+          updateTaskEditActionsVisibility();
+        }
+
+        if (taskEditForm) {
+          taskEditForm.addEventListener("input", updateTaskEditActionsVisibility);
+          taskEditForm.addEventListener("change", updateTaskEditActionsVisibility);
+          requestAnimationFrame(() => {
+            setTimeout(initTaskDirtyState, 250);
           });
         }
 
@@ -4711,7 +4906,7 @@
 
       if (cancelTaskEdit) {
         cancelTaskEdit.addEventListener("click", () => {
-          window.location.href = "/chat";
+          resetTaskFormToInitial();
         });
       }
       } // End task detail view block
