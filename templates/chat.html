@@ -1172,6 +1172,36 @@
           padding: var(--prompt-pad-y) var(--prompt-pad-x);
           box-sizing: border-box;
         }
+      .master-suggest {
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: calc(100% + 6px);
+        background: #0b0f16;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 6px;
+        box-shadow: 0 12px 24px rgba(0,0,0,0.25);
+        z-index: 1000;
+        display: none;
+        max-height: 220px;
+        overflow-y: auto;
+      }
+      .master-suggest.open { display: block; }
+      .master-suggest button {
+        width: 100%;
+        text-align: left;
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: none;
+        background: transparent;
+        color: var(--ink);
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .master-suggest button:hover {
+        background: rgba(148, 163, 184, 0.12);
+      }
       .prompt-mirror .master-prefix {
         font-weight: 400;
         text-shadow: 0.7px 0 0 currentColor, -0.7px 0 0 currentColor;
@@ -3350,6 +3380,12 @@
             row.insertBefore(mirror, promptInput);
             row.classList.add("master-input");
           }
+          let suggest = row.querySelector(".master-suggest");
+          if (!suggest) {
+            suggest = document.createElement("div");
+            suggest.className = "master-suggest";
+            row.appendChild(suggest);
+          }
           const rowRect = row.getBoundingClientRect();
           const inputRect = promptInput.getBoundingClientRect();
           if (rowRect.width && inputRect.width) {
@@ -3368,6 +3404,67 @@
         } else {
           mirror.textContent = value;
         }
+      }
+
+      function getMasterSuggestionState(value) {
+        if (!value.startsWith("@@")) return null;
+        const after = value.slice(2);
+        const match = after.match(/^([^\s:]*)(.*)$/);
+        if (!match) return null;
+        const partial = match[1] || "";
+        const tail = match[2] || "";
+        return { partial, tail };
+      }
+
+      function applyMasterSuggestion(name) {
+        if (!promptInput) return;
+        const current = promptInput.value || "";
+        const state = getMasterSuggestionState(current);
+        let tail = state ? state.tail : "";
+        let message = "";
+        if (tail.startsWith(":")) {
+          message = tail.slice(1);
+        } else if (tail.startsWith(" ")) {
+          message = tail;
+        }
+        if (message && !message.startsWith(" ")) {
+          message = " " + message.trimStart();
+        }
+        if (!message) {
+          message = " ";
+        }
+        promptInput.value = `@@${name}:${message}`;
+        renderPromptMirror();
+        requestAnimationFrame(() => {
+          promptInput.focus();
+          const end = promptInput.value.length;
+          promptInput.selectionStart = promptInput.selectionEnd = end;
+        });
+      }
+
+      function updateMasterSuggestions() {
+        if (!masterMode || !promptInput) return;
+        const row = promptInput.closest(".prompt-row");
+        if (!row) return;
+        const suggest = row.querySelector(".master-suggest");
+        if (!suggest) return;
+        const state = getMasterSuggestionState(promptInput.value || "");
+        if (!state || !state.partial) {
+          suggest.classList.remove("open");
+          suggest.innerHTML = "";
+          return;
+        }
+        const list = getSessionNameList();
+        const matches = list.filter((name) => name.toLowerCase().startsWith(state.partial.toLowerCase()));
+        if (!matches.length) {
+          suggest.classList.remove("open");
+          suggest.innerHTML = "";
+          return;
+        }
+        suggest.innerHTML = matches.slice(0, 8).map((name) => {
+          return `<button type="button" data-suggest="${escapeHtml(name)}">@@${escapeHtml(name)}</button>`;
+        }).join("");
+        suggest.classList.add("open");
       }
 
       if (form) {
@@ -3466,8 +3563,51 @@
               }
             }
           });
+          promptInput.addEventListener("input", () => {
+            if (masterMode) {
+              renderPromptMirror();
+              updateMasterSuggestions();
+            }
+          });
+          promptInput.addEventListener("focus", () => {
+            if (masterMode) updateMasterSuggestions();
+          });
         }
       }
+
+      document.addEventListener("click", (e) => {
+        if (!masterMode || !promptInput) return;
+        const row = promptInput.closest(".prompt-row");
+        const suggest = row ? row.querySelector(".master-suggest") : null;
+        if (!suggest) return;
+        const btn = e.target.closest("[data-suggest]");
+        if (btn) {
+          e.preventDefault();
+          e.stopPropagation();
+          const name = btn.getAttribute("data-suggest") || "";
+          if (name) applyMasterSuggestion(name);
+          suggest.classList.remove("open");
+          return;
+        }
+        if (row && !row.contains(e.target)) {
+          suggest.classList.remove("open");
+        }
+      });
+
+      document.addEventListener("pointerdown", (e) => {
+        if (!masterMode || !promptInput) return;
+        const row = promptInput.closest(".prompt-row");
+        const suggest = row ? row.querySelector(".master-suggest") : null;
+        if (!suggest) return;
+        const btn = e.target.closest("[data-suggest]");
+        if (btn) {
+          e.preventDefault();
+          e.stopPropagation();
+          const name = btn.getAttribute("data-suggest") || "";
+          if (name) applyMasterSuggestion(name);
+          suggest.classList.remove("open");
+        }
+      }, { capture: true });
 
       function wireSessionCards() {
         document.querySelectorAll(".session-card").forEach((card) => {
