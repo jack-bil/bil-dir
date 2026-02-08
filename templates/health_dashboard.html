@@ -227,6 +227,45 @@
             margin-top: 5px;
         }
 
+        .header-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        .meta-pill {
+            background: #f3f4f6;
+            border-radius: 999px;
+            padding: 6px 12px;
+            font-size: 12px;
+            color: #374151;
+            font-weight: 600;
+        }
+
+        .toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            font-weight: 600;
+            color: #374151;
+        }
+
+        .toggle input {
+            width: 36px;
+            height: 20px;
+        }
+
+        .interval-select {
+            border: 1px solid #e5e7eb;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 12px;
+            background: #fff;
+        }
+
         .actions {
             margin-top: 15px;
             display: flex;
@@ -262,6 +301,18 @@
             <p>Real-time monitoring of your Bil-dir system components</p>
             <div id="overall-status"></div>
             <div class="refresh-time" id="last-updated">Loading...</div>
+            <div class="header-meta">
+                <div class="meta-pill" id="uptime-pill">Uptime: --</div>
+                <label class="toggle">
+                    <input type="checkbox" id="autoRefreshToggle" checked />
+                    Auto-refresh
+                </label>
+                <select class="interval-select" id="refreshInterval">
+                    <option value="10000">10s</option>
+                    <option value="30000" selected>30s</option>
+                    <option value="60000">60s</option>
+                </select>
+            </div>
         </div>
 
         <div id="alerts"></div>
@@ -337,6 +388,7 @@
 
     <script>
         let healthData = null;
+        let refreshTimer = null;
 
         function getStatusClass(status) {
             return `status-${status}`;
@@ -379,6 +431,9 @@
             // Update last updated time
             const lastUpdated = new Date(healthData.timestamp);
             document.getElementById('last-updated').textContent = `Last updated: ${lastUpdated.toLocaleString()}`;
+            if (healthData.uptime_human) {
+                document.getElementById('uptime-pill').textContent = `Uptime: ${healthData.uptime_human}`;
+            }
 
             // Update alerts
             updateAlerts();
@@ -598,20 +653,34 @@
             fetchLogs();
         }
 
+        function setAutoRefresh(enabled) {
+            if (refreshTimer) {
+                clearInterval(refreshTimer);
+                refreshTimer = null;
+            }
+            if (!enabled) return;
+            const interval = parseInt(document.getElementById('refreshInterval').value || '30000', 10);
+            refreshTimer = setInterval(() => {
+                fetchHealth();
+                fetchLogs();
+            }, interval);
+        }
+
         function showError(message) {
             const alertsDiv = document.getElementById('alerts');
             alertsDiv.innerHTML = `<div class="alert alert-error">${message}</div>`;
         }
 
-        // Auto-refresh every 30 seconds
-        setInterval(() => {
-            fetchHealth();
-            fetchLogs();
-        }, 30000);
+        // Auto-refresh controls
+        const autoToggle = document.getElementById('autoRefreshToggle');
+        const intervalSelect = document.getElementById('refreshInterval');
+        autoToggle.addEventListener('change', () => setAutoRefresh(autoToggle.checked));
+        intervalSelect.addEventListener('change', () => setAutoRefresh(autoToggle.checked));
 
         // Initial load
         fetchHealth();
         fetchLogs();
+        setAutoRefresh(true);
     </script>
 </body>
 </html>

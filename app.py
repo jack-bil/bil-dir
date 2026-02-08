@@ -32,6 +32,7 @@ _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templa
 APP = Flask(__name__, template_folder=_TEMPLATE_DIR)
 APP.config["TEMPLATES_AUTO_RELOAD"] = True
 APP.jinja_env.auto_reload = True
+APP_START_TIME = time.time()
 
 # Working directory and data paths
 DEFAULT_CWD = os.environ.get("BILDIR_CWD", os.getcwd())
@@ -64,6 +65,69 @@ _ORCH_LOCK = threading.RLock()
 _ORCH_STATE = {}
 _PENDING_LOCK = threading.RLock()
 _PENDING_PROMPTS = {}
+
+
+def _format_duration(seconds):
+    seconds = int(max(0, seconds))
+    mins, sec = divmod(seconds, 60)
+    hrs, mins = divmod(mins, 60)
+    days, hrs = divmod(hrs, 24)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hrs:
+        parts.append(f"{hrs}h")
+    if mins:
+        parts.append(f"{mins}m")
+    parts.append(f"{sec}s")
+    return " ".join(parts)
+
+
+def _validate_name(value, label="name", max_len=120):
+    if not isinstance(value, str):
+        return f"{label} must be a string"
+    name = value.strip()
+    if not name:
+        return f"{label} is required"
+    if len(name) > max_len:
+        return f"{label} must be {max_len} chars or fewer"
+    if any(ch in name for ch in ["/", "\\", "\0"]):
+        return f"{label} contains invalid characters"
+    if name in {".", ".."}:
+        return f"{label} is invalid"
+    return None
+
+
+def _validate_provider(value, allow_default=False):
+    if not value and allow_default:
+        return None
+    if not isinstance(value, str):
+        return "provider must be a string"
+    if value.lower() not in SUPPORTED_PROVIDERS:
+        return "unknown provider"
+    return None
+
+
+def _require_json_body(allow_empty=False):
+    body = request.get_json(silent=True)
+    if body is None:
+        if allow_empty:
+            return {}, None
+        return None, (jsonify({"error": "invalid or missing JSON body"}), 400)
+    if not isinstance(body, dict):
+        return None, (jsonify({"error": "JSON body must be an object"}), 400)
+    return body, None
+
+
+def _validate_schedule(schedule):
+    if schedule is None:
+        return None
+    if not isinstance(schedule, dict):
+        return "schedule must be an object"
+    sched_type = (schedule.get("type") or "manual").strip().lower()
+    if sched_type not in {"manual", "once", "interval", "daily", "weekly", "monthly"}:
+        return "schedule.type is invalid"
+    return None
 
 
 def _safe_cwd(candidate):
@@ -2514,6 +2578,7 @@ def health_full():
     mcp_servers = _get_mcp_servers_status()
     tasks = _get_tasks_health_status()
     sessions = _get_sessions_health_status()
+    uptime_seconds = int(time.time() - APP_START_TIME)
 
     component_statuses = [gmail_status.get("status"), mcp_servers.get("status"), tasks.get("status"), sessions.get("status")]
     component_statuses.extend([value.get("status") for value in providers.values()])
@@ -2531,6 +2596,9 @@ def health_full():
         {
             "overall_status": overall_status,
             "timestamp": datetime.datetime.now().isoformat(),
+            "server_time": datetime.datetime.now().isoformat(timespec="seconds"),
+            "uptime_seconds": uptime_seconds,
+            "uptime_human": _format_duration(uptime_seconds),
             "providers": providers,
             "gmail_mcp": gmail_status,
             "mcp_servers": mcp_servers,
@@ -3131,7 +3199,9 @@ def exec_codex():
         f.flush()
     
     logger.debug("[Context] /exec endpoint called")
-    body = request.get_json(silent=True) or {}
+    body, err = _require_json_body()
+    if err:
+        return err
     prompt = body.get("prompt")
     extra_args = body.get("extra_args") or []
     timeout_sec = body.get("timeout_sec", 300)
@@ -3141,10 +3211,22 @@ def exec_codex():
     logger.debug(f"[Context] /exec: session={session_name}, provider={requested_provider}")
     resume_last = bool(body.get("resume_last", False))
     json_events = bool(body.get("json_events", True))
+    if session_name:
+        name_err = _validate_name(session_name, "session_name")
+        if name_err:
+            return jsonify({"error": name_err}), 400
+    if requested_provider:
+        provider_err = _validate_provider(requested_provider)
+        if provider_err:
+            return jsonify({"error": provider_err}), 400
+    if not isinstance(prompt, str) or not prompt.strip():
+        return jsonify({"error": "prompt must be a non-empty string"}), 400
+    if not isinstance(extra_args, list) or not all(isinstance(x, str) for x in extra_args):
+        return jsonify({"error": "extra_args must be a list of strings"}), 400
+    if not isinstance(timeout_sec, int) or timeout_sec <= 0 or timeout_sec > 3600:
+        return jsonify({"error": "timeout_sec must be an integer between 1 and 3600"}), 400
     try:
         cwd = _safe_cwd(body.get("cwd"))
-        if not isinstance(extra_args, list) or not all(isinstance(x, str) for x in extra_args):
-            return jsonify({"error": "extra_args must be a list of strings"}), 400
         # Capture current state BEFORE resolving provider (for context detection)
         current_provider_before = None
         current_session_id_before = None
@@ -4501,7 +4583,9 @@ def _orchestrator_loop():
 
 @APP.post("/stream")
 def stream_codex():
-    body = request.get_json(silent=True) or {}
+    body, err = _require_json_body()
+    if err:
+        return err
     prompt = body.get("prompt")
     extra_args = body.get("extra_args") or []
     timeout_sec = body.get("timeout_sec", 300)
@@ -4519,8 +4603,20 @@ def stream_codex():
             "has_prompt": bool(prompt),
         }
     )
+    if session_name:
+        name_err = _validate_name(session_name, "session_name")
+        if name_err:
+            return jsonify({"error": name_err}), 400
+    if requested_provider:
+        provider_err = _validate_provider(requested_provider)
+        if provider_err:
+            return jsonify({"error": provider_err}), 400
+    if not attach and (not isinstance(prompt, str) or not prompt.strip()):
+        return jsonify({"error": "prompt must be a non-empty string"}), 400
     if not isinstance(extra_args, list) or not all(isinstance(x, str) for x in extra_args):
         return jsonify({"error": "extra_args must be a list of strings"}), 400
+    if not isinstance(timeout_sec, int) or timeout_sec <= 0 or timeout_sec > 3600:
+        return jsonify({"error": "timeout_sec must be an integer between 1 and 3600"}), 400
 
     job_holder = {"job": None, "error": None}
     ready = threading.Event()
@@ -4750,12 +4846,16 @@ def list_orchestrators():
 
 @APP.post("/orchestrators")
 def create_orchestrator():
-    body = request.get_json(silent=True) or {}
+    body, err = _require_json_body()
+    if err:
+        return err
     name = (body.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "name is required"}), 400
+    name_err = _validate_name(name, "name")
+    if name_err:
+        return jsonify({"error": name_err}), 400
     provider = (body.get("provider") or DEFAULT_PROVIDER).lower()
-    if provider not in SUPPORTED_PROVIDERS:
+    provider_err = _validate_provider(provider, allow_default=True)
+    if provider_err:
         provider = DEFAULT_PROVIDER
     managed = body.get("managed_sessions")
     if not isinstance(managed, list):
@@ -4790,18 +4890,28 @@ def create_orchestrator():
 
 @APP.patch("/orchestrators/<orch_id>")
 def update_orchestrator(orch_id):
-    body = request.get_json(silent=True) or {}
+    body, err = _require_json_body()
+    if err:
+        return err
     with _ORCH_LOCK:
         data = _load_orchestrators()
         orch = data.get(orch_id)
         if not orch:
             return jsonify({"error": "not found"}), 404
         if "name" in body:
-            orch["name"] = (body.get("name") or "").strip() or orch.get("name")
+            new_name = (body.get("name") or "").strip()
+            if new_name:
+                name_err = _validate_name(new_name, "name")
+                if name_err:
+                    return jsonify({"error": name_err}), 400
+                orch["name"] = new_name
         if "provider" in body:
             provider = (body.get("provider") or "").strip().lower()
-            if provider in SUPPORTED_PROVIDERS:
+            provider_err = _validate_provider(provider)
+            if not provider_err:
                 orch["provider"] = provider
+            else:
+                return jsonify({"error": provider_err}), 400
         if "managed_sessions" in body and isinstance(body.get("managed_sessions"), list):
             orch["managed_sessions"] = body.get("managed_sessions")
         if "goal" in body:
@@ -4869,19 +4979,26 @@ def stream_tasks():
 
 @APP.post("/tasks")
 def create_task():
-    body = request.get_json(silent=True) or {}
+    body, err = _require_json_body()
+    if err:
+        return err
     name = (body.get("name") or "").strip()
     prompt = (body.get("prompt") or "").strip()
     provider = (body.get("provider") or DEFAULT_PROVIDER).lower()
     schedule = body.get("schedule") if isinstance(body.get("schedule"), dict) else {"type": "manual"}
     enabled = bool(body.get("enabled", True))
     workdir = (body.get("workdir") or "").strip()
-    if not name:
-        return jsonify({"error": "name is required"}), 400
+    name_err = _validate_name(name, "name")
+    if name_err:
+        return jsonify({"error": name_err}), 400
     if not prompt:
         return jsonify({"error": "prompt is required"}), 400
-    if provider not in SUPPORTED_PROVIDERS:
-        return jsonify({"error": "unknown provider"}), 400
+    provider_err = _validate_provider(provider)
+    if provider_err:
+        return jsonify({"error": provider_err}), 400
+    schedule_err = _validate_schedule(schedule)
+    if schedule_err:
+        return jsonify({"error": schedule_err}), 400
     task = _normalize_task(
         {
             "id": uuid.uuid4().hex,
@@ -4906,7 +5023,9 @@ def create_task():
 
 @APP.patch("/tasks/<task_id>")
 def update_task(task_id):
-    body = request.get_json(silent=True) or {}
+    body, err = _require_json_body()
+    if err:
+        return err
     with _TASK_LOCK:
         tasks = _load_tasks()
         task = tasks.get(task_id)
@@ -4914,8 +5033,9 @@ def update_task(task_id):
             return jsonify({"error": "not found"}), 404
         if "name" in body:
             name = (body.get("name") or "").strip()
-            if not name:
-                return jsonify({"error": "name is required"}), 400
+            name_err = _validate_name(name, "name")
+            if name_err:
+                return jsonify({"error": name_err}), 400
             task["name"] = name
         if "prompt" in body:
             prompt = (body.get("prompt") or "").strip()
@@ -4924,11 +5044,15 @@ def update_task(task_id):
             task["prompt"] = prompt
         if "provider" in body:
             provider = (body.get("provider") or "").strip().lower()
-            if provider not in SUPPORTED_PROVIDERS:
-                return jsonify({"error": "unknown provider"}), 400
+            provider_err = _validate_provider(provider)
+            if provider_err:
+                return jsonify({"error": provider_err}), 400
             task["provider"] = provider
         if "schedule" in body:
             schedule = body.get("schedule") if isinstance(body.get("schedule"), dict) else {"type": "manual"}
+            schedule_err = _validate_schedule(schedule)
+            if schedule_err:
+                return jsonify({"error": schedule_err}), 400
             task["schedule"] = schedule
         if "workdir" in body:
             task["workdir"] = (body.get("workdir") or "").strip()
@@ -4993,24 +5117,36 @@ def task_stream(task_id):
 
 @APP.post("/sessions/<name>/provider")
 def set_session_provider(name):
+    name_err = _validate_name(name, "name")
+    if name_err:
+        return jsonify({"error": name_err}), 400
     if _get_session_status(name) == "running":
         return jsonify({"error": "session is running"}), 409
-    body = request.get_json(silent=True) or {}
+    body, err = _require_json_body()
+    if err:
+        return err
     provider = (body.get("provider") or "").strip().lower()
-    if provider not in SUPPORTED_PROVIDERS:
-        return jsonify({"error": "unknown provider"}), 400
+    provider_err = _validate_provider(provider)
+    if provider_err:
+        return jsonify({"error": provider_err}), 400
     _set_session_provider(name, provider)
     return jsonify({"ok": True, "provider": provider})
 
 
 @APP.post("/sessions/<name>/rename")
 def rename_session(name):
+    name_err = _validate_name(name, "name")
+    if name_err:
+        return jsonify({"error": name_err}), 400
     if _get_session_status(name) == "running":
         return jsonify({"error": "session is running"}), 409
-    body = request.get_json(silent=True) or {}
+    body, err = _require_json_body()
+    if err:
+        return err
     new_name = (body.get("new_name") or "").strip()
-    if not new_name:
-        return jsonify({"error": "new_name is required"}), 400
+    new_err = _validate_name(new_name, "new_name")
+    if new_err:
+        return jsonify({"error": new_err}), 400
     if new_name == name:
         return jsonify({"ok": True, "name": new_name})
     with _SESSION_LOCK:
@@ -5031,12 +5167,16 @@ def rename_session(name):
 
 @APP.post("/sessions")
 def create_session():
-    body = request.get_json() or {}
+    body, err = _require_json_body()
+    if err:
+        return err
     name = (body.get("name") or "").strip()
-    if not name:
-        return jsonify({"error": "name is required"}), 400
+    name_err = _validate_name(name, "name")
+    if name_err:
+        return jsonify({"error": name_err}), 400
     provider = (body.get("provider") or DEFAULT_PROVIDER).lower()
-    if provider not in SUPPORTED_PROVIDERS:
+    provider_err = _validate_provider(provider, allow_default=True)
+    if provider_err:
         provider = DEFAULT_PROVIDER
     session_id_override = (body.get("session_id") or "").strip()
     workdir = (body.get("workdir") or "").strip()
@@ -5120,6 +5260,9 @@ def create_session():
 
 @APP.delete("/sessions/<name>")
 def delete_session(name):
+    name_err = _validate_name(name, "name")
+    if name_err:
+        return jsonify({"error": name_err}), 400
     with _SESSION_LOCK:
         data = _load_sessions()
         removed = data.pop(name, None)
