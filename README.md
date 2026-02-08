@@ -217,6 +217,10 @@ Open `/master` to see a consolidated feed of session responses. You can route me
 @@session-name: your message here
 ```
 
+## Docs
+- `PROJECT_SUMMARY.md` — overview of architecture and components
+- `USAGE_GUIDE.md` — setup and usage walkthrough
+
 ## Recent enhancements
 - Master console keeps the latest message at the bottom and preserves per-session color prefixes.
 - Inline markdown now renders in master console lines (without changing the terminal look).
