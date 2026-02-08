@@ -1411,7 +1411,8 @@ Write the summary (max 300 words):"""
                 timeout_sec=120,
                 cwd=_safe_cwd(None),
                 # Do NOT resume
-            ).strip()
+            )
+            summary = (summary or "").strip()
             logger.info(f"[Context] Summary generated: {len(summary)} chars")
             return summary
     except Exception as e:
@@ -1625,10 +1626,8 @@ def _ensure_session_id(name, provider):
         if not isinstance(session_ids, dict):
             session_ids = {}
         if not session_ids.get(provider):
-            if provider == "copilot":
+            if provider in {"copilot", "claude"}:
                 session_ids[provider] = None
-            elif provider == "claude":
-                session_ids[provider] = str(uuid.uuid4())
             else:
                 session_ids[provider] = f"{provider}-{uuid.uuid4().hex}"
         record["session_ids"] = session_ids
@@ -1680,6 +1679,8 @@ def _append_history(session_id, session_name, conversation):
                 break
     if assistant_text and session_name:
         _broadcast_master_message(session_name, assistant_text)
+
+
 
 
 def _sessions_with_status(sessions):
@@ -2220,11 +2221,13 @@ def _get_gemini_api_key_from_settings(cwd=None):
     return ""
 
 
-def _get_latest_claude_session_id(cwd=None):
+def _get_latest_claude_session_id(cwd=None, min_mtime=None, exact_only=False):
     """Get the most recent Claude session ID for a working directory.
 
     Args:
         cwd: Working directory path (optional)
+        min_mtime: Only consider sessions with mtime >= this timestamp (optional)
+        exact_only: If True, only consider the exact encoded workdir path (no fuzzy/global fallback)
 
     Returns:
         str: Session UUID or None if not found
@@ -2260,8 +2263,10 @@ def _get_latest_claude_session_id(cwd=None):
                 path = os.path.join(search_dir, dirname)
                 if os.path.isdir(path) and uuid_pattern.match(dirname):
                     mtime = os.path.getmtime(path)
+                    if min_mtime is not None and mtime < min_mtime:
+                        continue
                     sessions.append((dirname, mtime))
-        else:
+        elif not exact_only:
             # If exact match fails, look for similar paths
             # Claude normalizes paths by replacing spaces and underscores with hyphens
             # Normalize the search term and compare
@@ -2277,8 +2282,10 @@ def _get_latest_claude_session_id(cwd=None):
                         path = os.path.join(workdir_path, dirname)
                         if os.path.isdir(path) and uuid_pattern.match(dirname):
                             mtime = os.path.getmtime(path)
+                            if min_mtime is not None and mtime < min_mtime:
+                                continue
                             sessions.append((dirname, mtime))
-    elif claude_temp_exists:
+    elif claude_temp_exists and not exact_only:
         # Search all subdirectories
         for workdir_name in os.listdir(claude_temp):
             workdir_path = os.path.join(claude_temp, workdir_name)
@@ -2289,6 +2296,8 @@ def _get_latest_claude_session_id(cwd=None):
                 path = os.path.join(workdir_path, dirname)
                 if os.path.isdir(path) and uuid_pattern.match(dirname):
                     mtime = os.path.getmtime(path)
+                    if min_mtime is not None and mtime < min_mtime:
+                        continue
                     sessions.append((dirname, mtime))
 
     if not sessions:
@@ -2312,28 +2321,31 @@ def _get_latest_claude_session_id(cwd=None):
                     if entry.is_file() and entry.suffix == ".jsonl":
                         name = entry.stem
                         if uuid_pattern.match(name):
-                            sessions.append((name, entry.stat().st_mtime))
+                            mtime = entry.stat().st_mtime
+                            if min_mtime is not None and mtime < min_mtime:
+                                continue
+                            sessions.append((name, mtime))
 
             if cwd:
                 project_encoded = normalize_for_match(cwd.replace(":", "-").replace("\\", "-").replace("/", "-"))
                 exact_project_dir = projects_root / project_encoded
                 if exact_project_dir.exists() and exact_project_dir.is_dir():
                     collect_from_project_dir(exact_project_dir)
-                else:
+                elif not exact_only:
                     dir_basename_normalized = normalize_for_match(os.path.basename(cwd))
                     for project_dir in projects_root.iterdir():
                         if project_dir.is_dir():
                             project_name_normalized = normalize_for_match(project_dir.name)
                             if dir_basename_normalized in project_name_normalized:
                                 collect_from_project_dir(project_dir)
-            else:
+            elif not exact_only:
                 for project_dir in projects_root.iterdir():
                     if project_dir.is_dir():
                         collect_from_project_dir(project_dir)
             if sessions:
                 break
 
-    if not sessions and cwd and claude_temp_exists:
+    if not sessions and cwd and claude_temp_exists and not exact_only:
         # Fallback to searching all temp subdirectories if cwd-specific search fails
         for workdir_name in os.listdir(claude_temp):
             workdir_path = os.path.join(claude_temp, workdir_name)
@@ -2344,6 +2356,8 @@ def _get_latest_claude_session_id(cwd=None):
                 path = os.path.join(workdir_path, dirname)
                 if os.path.isdir(path) and uuid_pattern.match(dirname):
                     mtime = os.path.getmtime(path)
+                    if min_mtime is not None and mtime < min_mtime:
+                        continue
                     sessions.append((dirname, mtime))
 
     if not sessions:
@@ -2353,11 +2367,11 @@ def _get_latest_claude_session_id(cwd=None):
     return sessions[0][0]
 
 
-def _wait_for_claude_session_id(cwd, timeout_sec=2.0, interval_sec=0.1):
+def _wait_for_claude_session_id(cwd, timeout_sec=2.0, interval_sec=0.1, min_mtime=None, exact_only=False):
     deadline = time.monotonic() + timeout_sec
     last_seen = None
     while time.monotonic() < deadline:
-        last_seen = _get_latest_claude_session_id(cwd)
+        last_seen = _get_latest_claude_session_id(cwd, min_mtime=min_mtime, exact_only=exact_only)
         if last_seen:
             return last_seen
         time.sleep(interval_sec)
@@ -2370,6 +2384,9 @@ def _is_uuid(value):
     import re
     uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
     return bool(uuid_pattern.match(value))
+
+
+    
 
 
 def _run_claude_exec(prompt, config, timeout_sec=300, cwd=None, resume_session_id=None, resume_last=False, context_briefing=None, session_id=None):
@@ -2395,11 +2412,9 @@ Previous conversation history from other providers:
     args = [claude_path]
     args.append("--dangerously-skip-permissions")
     
-    # Add resume or new session flags (must come before -p)
+    # Add resume flags only for real Claude UUIDs
     if _is_uuid(resume_session_id):
         args.extend(["--resume", resume_session_id])
-    elif _is_uuid(session_id):
-        args.extend(["--session-id", session_id])
     elif resume_last:
         args.append("--continue")
     
@@ -3363,11 +3378,8 @@ def exec_codex():
                 "cmd": [gemini_path, "-p", prompt],
             }
         elif provider == "claude":
+            claude_start_time = time.time()
             session_id = resume_session_id if _is_uuid(resume_session_id) else None
-            session_id_for_cli = None
-            if session_name and not session_id:
-                session_id = _ensure_session_id(session_name, provider)
-                session_id_for_cli = session_id
             text = _run_claude_exec(
                 prompt,
                 config=config,
@@ -3376,40 +3388,33 @@ def exec_codex():
                 resume_session_id=resume_session_id,
                 resume_last=resume_last,
                 context_briefing=context_briefing,
-                session_id=session_id_for_cli,
             )
             claude_path = _resolve_claude_path(config) or "claude"
             events = _build_synthetic_events(text)
 
             # Get actual Claude session ID from temp directory
-            # Only extract if session_id is NOT a valid UUID (i.e., it's a generated ID)
-            if session_name:
-                # Check if resume_session_id is NOT a valid UUID
-                if not _is_uuid(resume_session_id):
-                    # Use cwd if set, otherwise use Flask app's working directory
-                    search_dir = cwd if cwd else os.getcwd()
-                    actual_session_id = _wait_for_claude_session_id(search_dir)
-                    if not actual_session_id:
-                        actual_session_id = _wait_for_claude_session_id(None)
-                    if actual_session_id:
-                        session_id = actual_session_id
-                        # Save it to sessions
-                        _set_session_name(session_name, session_id, provider)
-                        logger.info(f"Captured Claude session ID for {session_name}: {session_id}")
-                    else:
-                        session_id = session_id or _ensure_session_id(session_name, provider)
-                else:
-                    # Already have a valid UUID, use it
-                    session_id = resume_session_id
-            else:
-                session_id = resume_session_id or _ensure_session_id(session_name, provider) if session_name else None
+            # Only extract if we don't already have a real Claude UUID
+            if session_name and not _is_uuid(resume_session_id):
+                search_dir = cwd if cwd else os.getcwd()
+                actual_session_id = _wait_for_claude_session_id(
+                    search_dir,
+                    timeout_sec=3.0,
+                    min_mtime=claude_start_time,
+                    exact_only=True,
+                )
+                if actual_session_id:
+                    session_id = actual_session_id
+                    _set_session_name(session_name, session_id, provider)
+                    logger.info(f"Captured Claude session ID for {session_name}: {session_id}")
+            elif _is_uuid(resume_session_id):
+                session_id = resume_session_id
 
             result = {
                 "returncode": 0,
                 "stdout": text,
                 "stderr": "",
                 "cwd": cwd,
-                "cmd": [claude_path, "-p", prompt],
+                "cmd": [claude_path, "--dangerously-skip-permissions", "<stdin>"],
             }
         else:
             return jsonify({"error": "unknown provider"}), 400
@@ -4016,10 +4021,8 @@ Previous conversation history from other providers:
             with _JOB_LOCK:
                 _JOBS.pop(job.key, None)
             return
-        session_id = job.session_id or (job.session_name and _ensure_session_id(job.session_name, job.provider))
-        if session_id:
-            job.session_id = session_id
-            job.broadcast(f"event: session_id\ndata: {session_id}\n\n")
+        if _is_uuid(job.session_id):
+            job.broadcast(f"event: session_id\ndata: {job.session_id}\n\n")
         
         args = [gemini_path]
         
@@ -4135,6 +4138,7 @@ Previous conversation history from other providers:
 {prompt}"""
         
         config = _get_provider_config()
+        claude_start_time = time.time()
         claude_path = _resolve_claude_path(config)
         if not claude_path:
             _broadcast_error(job, "claude CLI not found in PATH")
@@ -4148,93 +4152,105 @@ Previous conversation history from other providers:
             job.session_id = session_id
             job.broadcast(f"event: session_id\ndata: {session_id}\n\n")
         
-        args = [claude_path]
-        args.append("--dangerously-skip-permissions")
-        
-        # Add resume flag if resuming a session (must come before -p)
+        def run_claude_stream(args, prompt_text):
+            try:
+                env = os.environ.copy()
+                if not env.get("GEMINI_API_KEY"):
+                    api_key = _get_gemini_api_key_from_settings(job.cwd)
+                    if api_key:
+                        env["GEMINI_API_KEY"] = api_key
+                proc = subprocess.Popen(
+                    args,
+                    cwd=job.cwd,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    bufsize=1,
+                    env=env,
+                )
+                if prompt_text:
+                    proc.stdin.write(prompt_text + "\n")
+                    proc.stdin.flush()
+                    proc.stdin.close()
+            except FileNotFoundError:
+                _broadcast_error(job, "claude CLI not found in PATH")
+                return None, [], []
+
+            q = queue.Queue()
+            t_out = threading.Thread(target=_enqueue_output, args=(proc.stdout, q, "stdout"))
+            t_err = threading.Thread(target=_enqueue_output, args=(proc.stderr, q, "stderr"))
+            t_out.daemon = True
+            t_err.daemon = True
+            t_out.start()
+            t_err.start()
+
+            assistant_chunks = []
+            stderr_lines = []
+            start = time.monotonic()
+            while True:
+                try:
+                    label, line = q.get(timeout=0.25)
+                    line_text = line.rstrip("\n")
+                    if label == "stdout":
+                        if line_text:
+                            assistant_chunks.append(line_text)
+                            _broadcast_agent_message(job, line_text)
+                    else:
+                        if line_text:
+                            stderr_lines.append(line_text)
+                            job.broadcast(f"data: {label}:{line_text}\n\n")
+                except queue.Empty:
+                    if proc.poll() is not None:
+                        break
+                    if time.monotonic() - start > job.timeout_sec:
+                        proc.kill()
+                        _broadcast_error(job, "claude exec timed out")
+                        break
+
+            proc.wait()
+            return proc, assistant_chunks, stderr_lines
+
+        args = [claude_path, "--dangerously-skip-permissions"]
         if _is_uuid(job.resume_session_id):
             args.extend(["--resume", job.resume_session_id])
-        elif _is_uuid(job.session_id):
-            args.extend(["--session-id", job.session_id])
         elif job.resume_last:
             args.append("--continue")
-        try:
-            env = os.environ.copy()
-            if not env.get("GEMINI_API_KEY"):
-                api_key = _get_gemini_api_key_from_settings(job.cwd)
-                if api_key:
-                    env["GEMINI_API_KEY"] = api_key
-            proc = subprocess.Popen(
-                args,
-                cwd=job.cwd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                bufsize=1,
-                env=env,
-            )
-            if prompt:
-                proc.stdin.write(prompt + "\n")
-                proc.stdin.flush()
-                proc.stdin.close()
-        except FileNotFoundError:
-            _broadcast_error(job, "claude CLI not found in PATH")
+
+        proc, assistant_chunks, stderr_lines = run_claude_stream(args, prompt)
+        if proc is None:
             job.done.set()
             _set_session_status(job.session_name, "idle")
             with _JOB_LOCK:
                 _JOBS.pop(job.key, None)
             return
 
-        q = queue.Queue()
-        t_out = threading.Thread(target=_enqueue_output, args=(proc.stdout, q, "stdout"))
-        t_err = threading.Thread(target=_enqueue_output, args=(proc.stderr, q, "stderr"))
-        t_out.daemon = True
-        t_err.daemon = True
-        t_out.start()
-        t_err.start()
-
-        assistant_chunks = []
-        start = time.monotonic()
-        while True:
-            try:
-                label, line = q.get(timeout=0.25)
-                line_text = line.rstrip("\n")
-                if label == "stdout":
-                    if line_text:
-                        assistant_chunks.append(line_text)
-                        _broadcast_agent_message(job, line_text)
-                else:
-                    if line_text:
-                        job.broadcast(f"data: {label}:{line_text}\n\n")
-            except queue.Empty:
-                if proc.poll() is not None:
-                    break
-                if time.monotonic() - start > job.timeout_sec:
-                    proc.kill()
-                    _broadcast_error(job, "claude exec timed out")
-                    break
-
-        proc.wait()
+        if proc.returncode and proc.returncode != 0:
+            combined = "\n".join(stderr_lines) or "\n".join(assistant_chunks) or "claude CLI failed"
+            _broadcast_error(job, _filter_debug_messages(combined).strip())
+            job.returncode = proc.returncode
+            job.done.set()
+            _set_session_status(job.session_name, "idle")
+            with _JOB_LOCK:
+                _JOBS.pop(job.key, None)
+            return
 
         # Extract actual Claude session ID from temp directory if session ID is not a valid UUID
         # (i.e., it's a generated ID that needs to be replaced with the real one)
-        if job.session_name:
-            # Only extract if current session_id is NOT a valid UUID (i.e., it's generated)
-            if not _is_uuid(job.session_id):
-                # Use cwd if set, otherwise use Flask app's working directory
-                search_dir = job.cwd if job.cwd else os.getcwd()
-                actual_session_id = _wait_for_claude_session_id(search_dir)
-                if not actual_session_id:
-                    actual_session_id = _wait_for_claude_session_id(None)
-                if actual_session_id:
-                    job.session_id = actual_session_id
-                    # Save it to sessions
-                    _set_session_name(job.session_name, actual_session_id, job.provider)
-                    logger.info(f"Captured Claude session ID for {job.session_name}: {actual_session_id}")
-                    # Broadcast the actual session ID
-                    job.broadcast(f"event: session_id\ndata: {actual_session_id}\n\n")
+        if job.session_name and not _is_uuid(job.session_id):
+            search_dir = job.cwd if job.cwd else os.getcwd()
+            actual_session_id = _wait_for_claude_session_id(
+                search_dir,
+                timeout_sec=3.0,
+                min_mtime=claude_start_time,
+                exact_only=True,
+            )
+            if actual_session_id:
+                job.session_id = actual_session_id
+                _set_session_name(job.session_name, actual_session_id, job.provider)
+                logger.info(f"Captured Claude session ID for {job.session_name}: {actual_session_id}")
+                job.broadcast(f"event: session_id\ndata: {actual_session_id}\n\n")
 
         job.returncode = 0
         _log_event(
@@ -4308,7 +4324,11 @@ def _run_task_exec(task):
         return {"output": text, "raw_output": text, "cmd": [_resolve_gemini_path(config) or "gemini", "-p", prompt]}
     if provider == "claude":
         text = _run_claude_exec(prompt, config=config, cwd=cwd, timeout_sec=timeout_sec)
-        return {"output": text, "raw_output": text, "cmd": [_resolve_claude_path(config) or "claude", "-p", prompt]}
+        return {
+            "output": text,
+            "raw_output": text,
+            "cmd": [_resolve_claude_path(config) or "claude", "--dangerously-skip-permissions", "<stdin>"],
+        }
     raise RuntimeError("unknown provider")
 
 
@@ -5186,7 +5206,10 @@ def create_session():
         data = _load_sessions()
         if name in data:
             return jsonify({"error": "session already exists"}), 409
-        session_id = session_id_override or f"{provider}-{uuid.uuid4().hex}"
+        if provider == "claude":
+            session_id = session_id_override or None
+        else:
+            session_id = session_id_override or f"{provider}-{uuid.uuid4().hex}"
         record = {
             "session_id": session_id,
             "session_ids": {provider: session_id},
@@ -5228,22 +5251,9 @@ def create_session():
                         proc, args = _run_copilot_exec(init_prompt, cwd, config, extra_args=["--allow-all-paths"], timeout_sec=120, resume_session_id=None)
                         logger.info(f"Auto-init completed for Copilot session '{name}'")
                     elif provider == "claude":
-                        # Claude: Run /init with bypass permissions
-                        claude_path = _resolve_claude_path(config)
-                        if claude_path:
-                            args = [claude_path, "--dangerously-skip-permissions", "-p", "/init"]
-                            proc = subprocess.run(
-                                args,
-                                cwd=cwd,
-                                capture_output=True,
-                                text=True,
-                                encoding="utf-8",
-                                timeout=240,  # 4 minutes for Claude
-                            )
-                            if proc.returncode != 0:
-                                logger.error(f"Claude auto-init failed: {proc.stderr or proc.stdout}")
-                            else:
-                                logger.info(f"Auto-init completed for Claude session '{name}'")
+                        # Claude: Run /init via stdin for multi-line support consistency
+                        _run_claude_exec("/init", config=config, cwd=cwd, timeout_sec=240)
+                        logger.info(f"Auto-init completed for Claude session '{name}'")
                     elif provider == "gemini":
                         # Gemini: Skip for now - has issues with tool execution
                         logger.info(f"Skipping auto-init for Gemini (not supported)")
