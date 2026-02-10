@@ -822,11 +822,26 @@ def _compute_next_run(task, now=None):
 
 def _broadcast_tasks_snapshot():
     snapshot = _build_tasks_snapshot()
+
+    # Add to history for reconnection support
+    _TASK_STREAM_HISTORY.add(snapshot)
+
+    dead = []
     for q in list(_TASK_SUBSCRIBERS):
         try:
-            q.put_nowait(snapshot)
+            # Give slow clients 50ms to drain their queue
+            q.put(snapshot, timeout=0.05)
         except queue.Full:
-            pass
+            # Client is too slow - disconnect it
+            logger.warning("[Backpressure] Disconnecting slow task subscriber (queue full)")
+            dead.append(q)
+        except Exception as e:
+            logger.warning(f"[Backpressure] Error broadcasting to task subscriber: {e}")
+            dead.append(q)
+
+    # Remove dead subscribers
+    for q in dead:
+        _TASK_SUBSCRIBERS.discard(q)
 
 
 def _build_tasks_snapshot():
@@ -869,14 +884,29 @@ def _task_stream_publish(task_id, event, data=None):
     payload = {"event": event, "data": data or {}}
     with _TASK_STREAMS_LOCK:
         queues = list(_TASK_STREAMS.get(task_id) or [])
+
+    dead = []
     for q in queues:
         try:
-            q.put_nowait(payload)
+            # Give slow clients 50ms to drain their queue
+            q.put(payload, timeout=0.05)
         except queue.Full:
-            # Queue is full, skip this subscriber
-            continue
+            logger.warning(f"[Backpressure] Disconnecting slow task stream subscriber for {task_id} (queue full)")
+            dead.append(q)
         except Exception as e:
-            logger.warning(f"Failed to publish to task stream for {task_id}: {e}")
+            logger.warning(f"[Backpressure] Error publishing to task stream for {task_id}: {e}")
+            dead.append(q)
+
+    # Remove dead subscribers
+    if dead:
+        with _TASK_STREAMS_LOCK:
+            task_queues = _TASK_STREAMS.get(task_id)
+            if task_queues:
+                for q in dead:
+                    if q in task_queues:
+                        task_queues.remove(q)
+                if not task_queues:
+                    _TASK_STREAMS.pop(task_id, None)
 
 
 def _migrate_legacy_files():
@@ -1173,19 +1203,21 @@ def _log_event(payload):
 
 def _append_history(session_id, session_name, conversation):
     """Append conversation to history in the appropriate directory.
-    
+
     Args:
         session_id: Session identifier
         session_name: Name of the session (to look up workdir)
         conversation: Conversation data with messages and tool_outputs
     """
     if not session_id or not conversation:
+        logger.debug(f"[History] Skipped: session_id={session_id}, conversation={bool(conversation)}")
         return
     messages = conversation.get("messages") or []
     tool_outputs = conversation.get("tool_outputs") or []
     if not messages and not tool_outputs:
+        logger.debug(f"[History] Skipped: no messages or tool_outputs for session_id={session_id}")
         return
-    
+
     # Get workdir from session record
     workdir = None
     if session_name:
@@ -1193,15 +1225,19 @@ def _append_history(session_id, session_name, conversation):
             sessions = _load_sessions()
             record = sessions.get(session_name) or {}
             workdir = record.get("workdir")
-    
+
+    logger.info(f"[History] Appending session_id={session_id}, session_name={session_name}, workdir={workdir}, messages={len(messages)}, tool_outputs={len(tool_outputs)}")
+
     with _SESSION_LOCK:
         data = _load_history(workdir)
+        logger.debug(f"[History] Loaded history with {len(data)} sessions")
         entry = data.get(session_id) or {"session_id": session_id, "messages": [], "tool_outputs": []}
         if session_name:
             entry["session_name"] = session_name
         entry["messages"].extend(messages)
         entry["tool_outputs"].extend(tool_outputs)
         data[session_id] = entry
+        logger.info(f"[History] Saving session_id={session_id} with {len(entry['messages'])} total messages to workdir={workdir}")
         _save_history(data, workdir)
 
 
@@ -1269,14 +1305,19 @@ def _broadcast_master_message(session_name, text_or_payload):
             return
         payload = {"type": "message", "session_name": session_name, "text": text_or_payload}
 
+    # Add to history for reconnection support
+    _MASTER_STREAM_HISTORY.add(payload)
+
     dead = []
     for q in list(_MASTER_SUBSCRIBERS):
         try:
-            q.put_nowait(payload)
+            # Give slow clients 50ms to drain their queue
+            q.put(payload, timeout=0.05)
         except queue.Full:
-            pass
+            logger.warning(f"[Backpressure] Disconnecting slow master subscriber (queue full)")
+            dead.append(q)
         except Exception as e:
-            logger.warning(f"Failed to broadcast to master subscriber: {e}")
+            logger.warning(f"[Backpressure] Failed to broadcast to master subscriber: {e}")
             dead.append(q)
     for q in dead:
         _MASTER_SUBSCRIBERS.discard(q)
@@ -1291,15 +1332,23 @@ def _broadcast_session_message(session_name, payload):
     """
     if not session_name or not payload:
         return
+
+    # Add to per-session history for reconnection support
+    if session_name not in _SESSION_MESSAGE_HISTORY:
+        _SESSION_MESSAGE_HISTORY[session_name] = _StreamHistory(maxlen=500)
+    _SESSION_MESSAGE_HISTORY[session_name].add(payload)
+
     viewers = _SESSION_VIEWERS.get(session_name, set())
     dead = []
     for q in list(viewers):
         try:
-            q.put_nowait(payload)
+            # Give slow clients 50ms to drain their queue
+            q.put(payload, timeout=0.05)
         except queue.Full:
-            pass
+            logger.warning(f"[Backpressure] Disconnecting slow session viewer for {session_name} (queue full)")
+            dead.append(q)
         except Exception as e:
-            logger.warning(f"Failed to broadcast to session {session_name} viewer: {e}")
+            logger.warning(f"[Backpressure] Failed to broadcast to session {session_name} viewer: {e}")
             dead.append(q)
     for q in dead:
         viewers.discard(q)
@@ -2463,6 +2512,7 @@ class _Job:
         self.done = threading.Event()
         self.returncode = None
         self.buffer = deque(maxlen=800)
+        self.finish_time = None  # Set when job completes for cleanup tracking
 
     def add_subscriber(self, q):
         with self.lock:
@@ -2476,11 +2526,24 @@ class _Job:
         with self.lock:
             self.buffer.append(payload)
             subscribers = list(self.subscribers)
+
+        dead = []
         for q in subscribers:
             try:
-                q.put_nowait(payload)
+                # Give slow clients 50ms to drain their queue
+                q.put(payload, timeout=0.05)
             except queue.Full:
-                pass
+                logger.warning(f"[Backpressure] Disconnecting slow job subscriber for {self.session_name} (queue full)")
+                dead.append(q)
+            except Exception as e:
+                logger.warning(f"[Backpressure] Error broadcasting to job subscriber: {e}")
+                dead.append(q)
+
+        # Remove dead subscribers
+        if dead:
+            with self.lock:
+                for q in dead:
+                    self.subscribers.discard(q)
 
     def add_subscriber_with_snapshot(self, q):
         with self.lock:
@@ -2605,6 +2668,7 @@ def _start_job(job):
         _start_claude_job(job)
     else:
         _broadcast_error(job, "unknown provider")
+        job.finish_time = time.time()
         job.done.set()
         _set_session_status(job.session_name, "idle")
         with _JOB_LOCK:
@@ -2616,6 +2680,7 @@ def _start_codex_job(job):
         codex_path = _resolve_codex_path()
         if not codex_path:
             _broadcast_error(job, "codex CLI not found in PATH")
+            job.finish_time = time.time()
             job.done.set()
             _set_session_status(job.session_name, "idle")
             with _JOB_LOCK:
@@ -2658,6 +2723,7 @@ def _start_codex_job(job):
             proc.stdin.close()
         except FileNotFoundError:
             _broadcast_error(job, "codex CLI not found in PATH")
+            job.finish_time = time.time()
             job.done.set()
             _set_session_status(job.session_name, "idle")
             with _JOB_LOCK:
@@ -2759,6 +2825,7 @@ def _start_codex_job(job):
                 _trigger_orchestrator_check(job.session_name)
 
         job.broadcast(f"event: done\ndata: returncode={rc}\n\n")
+        job.finish_time = time.time()
         job.done.set()
         _set_session_status(job.session_name, "idle")
         with _JOB_LOCK:
@@ -2794,6 +2861,7 @@ Previous conversation history from other providers:
         copilot_path = _resolve_copilot_path(config)
         if not copilot_path:
             _broadcast_error(job, "copilot CLI not found in PATH")
+            job.finish_time = time.time()
             job.done.set()
             _set_session_status(job.session_name, "idle")
             with _JOB_LOCK:
@@ -2858,6 +2926,7 @@ Previous conversation history from other providers:
                 proc.stdin.close()
         except FileNotFoundError:
             _broadcast_error(job, "copilot CLI not found in PATH")
+            job.finish_time = time.time()
             job.done.set()
             _set_session_status(job.session_name, "idle")
             with _JOB_LOCK:
@@ -2957,6 +3026,7 @@ Previous conversation history from other providers:
             if assistant_chunks:
                 assistant_text = "\n".join(assistant_chunks).strip()
                 conversation["messages"].append({"role": "assistant", "text": assistant_text})
+            logger.info(f"[Copilot History] Appending to session_id={job.session_id}, session_name={job.session_name}, messages={len(conversation['messages'])}")
             _append_history(job.session_id, job.session_name, conversation)
 
             # Note: Agent responses are already streamed via job SSE (/stream endpoint)
@@ -2978,6 +3048,7 @@ Previous conversation history from other providers:
                 _trigger_orchestrator_check(job.session_name)
 
         job.broadcast(f"event: done\ndata: returncode={rc}\n\n")
+        job.finish_time = time.time()
         job.done.set()
         _set_session_status(job.session_name, "idle")
         with _JOB_LOCK:
@@ -3009,6 +3080,7 @@ Previous conversation history from other providers:
         gemini_path = _resolve_gemini_path(config)
         if not gemini_path:
             _broadcast_error(job, "gemini CLI not found in PATH")
+            job.finish_time = time.time()
             job.done.set()
             _set_session_status(job.session_name, "idle")
             with _JOB_LOCK:
@@ -3054,6 +3126,7 @@ Previous conversation history from other providers:
                 proc.stdin.close()
         except FileNotFoundError:
             _broadcast_error(job, "gemini CLI not found in PATH")
+            job.finish_time = time.time()
             job.done.set()
             _set_session_status(job.session_name, "idle")
             with _JOB_LOCK:
@@ -3129,6 +3202,7 @@ Previous conversation history from other providers:
                 _trigger_orchestrator_check(job.session_name)
 
         job.broadcast(f"event: done\ndata: returncode={rc}\n\n")
+        job.finish_time = time.time()
         job.done.set()
         _set_session_status(job.session_name, "idle")
         with _JOB_LOCK:
@@ -3161,6 +3235,7 @@ Previous conversation history from other providers:
         claude_path = _resolve_claude_path(config)
         if not claude_path:
             _broadcast_error(job, "claude CLI not found in PATH")
+            job.finish_time = time.time()
             job.done.set()
             _set_session_status(job.session_name, "idle")
             with _JOB_LOCK:
@@ -3241,6 +3316,7 @@ Previous conversation history from other providers:
 
         proc, assistant_chunks, stderr_lines = run_claude_stream(args, prompt)
         if proc is None:
+            job.finish_time = time.time()
             job.done.set()
             _set_session_status(job.session_name, "idle")
             with _JOB_LOCK:
@@ -3251,6 +3327,7 @@ Previous conversation history from other providers:
             combined = "\n".join(stderr_lines) or "\n".join(assistant_chunks) or "claude CLI failed"
             _broadcast_error(job, _filter_debug_messages(combined).strip())
             job.returncode = proc.returncode
+            job.finish_time = time.time()
             job.done.set()
             _set_session_status(job.session_name, "idle")
             with _JOB_LOCK:
@@ -3313,6 +3390,7 @@ Previous conversation history from other providers:
                 _trigger_orchestrator_check(job.session_name)
 
         job.broadcast(f"event: done\ndata: returncode={rc}\n\n")
+        job.finish_time = time.time()
         job.done.set()
         _set_session_status(job.session_name, "idle")
         with _JOB_LOCK:
@@ -3500,6 +3578,141 @@ def _run_task_async(task_id, force_run=False):
     thread.start()
 
 
+class _StreamHistory:
+    """Maintains message history for SSE stream reconnection.
+
+    Stores recent messages with incrementing IDs to support Last-Event-ID
+    based reconnection and replay of missed messages.
+    """
+    def __init__(self, maxlen=1000):
+        """Initialize stream history buffer.
+
+        Args:
+            maxlen: Maximum number of messages to keep in buffer
+        """
+        self.messages = deque(maxlen=maxlen)
+        self.counter = 0
+        self.lock = threading.Lock()
+
+    def add(self, payload):
+        """Add a message to the history buffer.
+
+        Args:
+            payload: The message payload to store
+
+        Returns:
+            int: The message ID assigned to this message
+        """
+        with self.lock:
+            self.counter += 1
+            self.messages.append((self.counter, payload))
+            return self.counter
+
+    def replay_from(self, last_id):
+        """Get all messages after a given ID for reconnection replay.
+
+        Args:
+            last_id: The last message ID the client received
+
+        Returns:
+            list: List of (message_id, payload) tuples after last_id
+        """
+        with self.lock:
+            return [(mid, p) for mid, p in self.messages if mid > last_id]
+
+
+# Stream history buffers for reconnection support
+_SESSION_STREAM_HISTORY = _StreamHistory(maxlen=1000)
+_MASTER_STREAM_HISTORY = _StreamHistory(maxlen=1000)
+_TASK_STREAM_HISTORY = _StreamHistory(maxlen=1000)
+_SESSION_MESSAGE_HISTORY = {}  # session_name -> _StreamHistory
+
+
+def _cleanup_dead_subscribers():
+    """Remove queues that are no longer being read from subscriber sets.
+
+    This prevents memory leaks from disconnected clients whose queues
+    remain in the subscriber sets indefinitely.
+    """
+    cleaned_count = 0
+
+    # Check each subscriber set
+    for subscriber_set in [_SESSION_SUBSCRIBERS, _TASK_SUBSCRIBERS, _MASTER_SUBSCRIBERS]:
+        dead = []
+        for q in list(subscriber_set):
+            try:
+                # If queue is full and not being drained, it's likely dead
+                if q.full() and q.qsize() >= q.maxsize:
+                    dead.append(q)
+            except Exception:
+                # Queue is in a bad state, mark for removal
+                dead.append(q)
+
+        for q in dead:
+            subscriber_set.discard(q)
+            cleaned_count += 1
+
+    # Check session viewers (nested dict structure)
+    for session_name in list(_SESSION_VIEWERS.keys()):
+        viewers = _SESSION_VIEWERS.get(session_name, set())
+        dead = []
+        for q in list(viewers):
+            try:
+                if q.full() and q.qsize() >= q.maxsize:
+                    dead.append(q)
+            except Exception:
+                dead.append(q)
+
+        for q in dead:
+            viewers.discard(q)
+            cleaned_count += 1
+
+        # Remove empty viewer sets
+        if not viewers:
+            _SESSION_VIEWERS.pop(session_name, None)
+
+    if cleaned_count > 0:
+        logger.info(f"[Cleanup] Removed {cleaned_count} dead subscriber queue(s)")
+
+    return cleaned_count
+
+
+def _cleanup_old_jobs():
+    """Remove completed jobs older than 1 hour to prevent memory leaks.
+
+    Each job keeps up to 800 messages in its buffer. Old completed jobs
+    accumulate in memory indefinitely without cleanup.
+    """
+    cutoff = time.time() - 3600  # 1 hour ago
+    cleaned_count = 0
+
+    with _JOB_LOCK:
+        dead_keys = []
+        for k, job in _JOBS.items():
+            # Only clean up jobs that are done
+            if not job.done.is_set():
+                continue
+
+            # Check if job has a finish timestamp
+            finish_time = getattr(job, 'finish_time', None)
+            if finish_time is None:
+                # Job is done but no timestamp - estimate from current time
+                # This handles jobs completed before we added timestamp tracking
+                finish_time = time.time() - 1800  # Assume 30 min ago
+
+            if finish_time < cutoff:
+                dead_keys.append(k)
+
+        for k in dead_keys:
+            _JOBS.pop(k, None)
+            cleaned_count += 1
+
+    if cleaned_count > 0:
+        logger.info(f"[Cleanup] Removed {cleaned_count} old job(s)")
+
+    return cleaned_count
+
+
 def _task_scheduler_loop():
     while True:
         now = datetime.datetime.now()
@@ -3529,6 +3742,11 @@ def _task_scheduler_loop():
                 due.append(task_id)
         for task_id in due:
             _run_task_async(task_id)
+
+        # Periodic cleanup to prevent memory leaks
+        _cleanup_dead_subscribers()
+        _cleanup_old_jobs()
+
         time.sleep(30)
 
 
@@ -4095,8 +4313,12 @@ def stream_sessions():
             snapshot = _build_sessions_snapshot()
             yield f"data: {json.dumps({'type': 'snapshot', **snapshot})}\n\n"
             while True:
-                payload = q.get()
-                yield f"data: {json.dumps({'type': 'snapshot', **payload})}\n\n"
+                try:
+                    payload = q.get(timeout=15)
+                    yield f"data: {json.dumps({'type': 'snapshot', **payload})}\n\n"
+                except queue.Empty:
+                    # Send heartbeat to detect disconnected clients
+                    yield ": heartbeat\n\n"
         finally:
             _SESSION_SUBSCRIBERS.discard(q)
 
@@ -4120,15 +4342,40 @@ def stream_session_messages():
     if not session_name:
         return jsonify({"error": "session parameter required"}), 400
 
+    # Check for reconnection with Last-Event-ID
+    last_event_id = request.headers.get('Last-Event-ID')
+    last_id = None
+    if last_event_id:
+        try:
+            last_id = int(last_event_id)
+        except (ValueError, TypeError):
+            pass
+
     def generate():
         q = queue.Queue(maxsize=100)
         viewers = _SESSION_VIEWERS.setdefault(session_name, set())
         viewers.add(q)
         try:
             yield "event: open\ndata: {}\n\n"
+
+            # Replay missed messages if reconnecting
+            if last_id is not None and session_name in _SESSION_MESSAGE_HISTORY:
+                missed = _SESSION_MESSAGE_HISTORY[session_name].replay_from(last_id)
+                for msg_id, payload in missed:
+                    yield f"id: {msg_id}\ndata: {json.dumps(payload)}\n\n"
+
             while True:
-                payload = q.get()
-                yield f"data: {json.dumps(payload)}\n\n"
+                try:
+                    payload = q.get(timeout=15)
+                    # Get message ID from session history
+                    if session_name in _SESSION_MESSAGE_HISTORY:
+                        msg_id = _SESSION_MESSAGE_HISTORY[session_name].counter
+                        yield f"id: {msg_id}\ndata: {json.dumps(payload)}\n\n"
+                    else:
+                        yield f"data: {json.dumps(payload)}\n\n"
+                except queue.Empty:
+                    # Send heartbeat to detect disconnected clients
+                    yield ": heartbeat\n\n"
         finally:
             viewers.discard(q)
             if not viewers:
@@ -4139,16 +4386,42 @@ def stream_session_messages():
 
 @APP.get("/master/stream")
 def stream_master():
+    # Check for reconnection with Last-Event-ID
+    last_event_id = request.headers.get('Last-Event-ID')
+    last_id = None
+    if last_event_id:
+        try:
+            last_id = int(last_event_id)
+        except (ValueError, TypeError):
+            pass
+
     def generate():
         q = queue.Queue(maxsize=100)
         _MASTER_SUBSCRIBERS.add(q)
         try:
             yield "event: open\ndata: {}\n\n"
+
+            # Replay missed messages if reconnecting
+            if last_id is not None:
+                missed = _MASTER_STREAM_HISTORY.replay_from(last_id)
+                for msg_id, payload in missed:
+                    yield f"id: {msg_id}\ndata: {json.dumps(payload)}\n\n"
+
+            # Send current snapshot
             snapshot = _build_master_snapshot()
-            yield f"data: {json.dumps({'type': 'snapshot', **snapshot})}\n\n"
+            msg_id = _MASTER_STREAM_HISTORY.add({'type': 'snapshot', **snapshot})
+            yield f"id: {msg_id}\ndata: {json.dumps({'type': 'snapshot', **snapshot})}\n\n"
+
             while True:
-                payload = q.get()
-                yield f"data: {json.dumps(payload)}\n\n"
+                try:
+                    payload = q.get(timeout=15)
+                    # Message ID is already assigned in broadcast function
+                    # Just get the current counter for this message
+                    msg_id = _MASTER_STREAM_HISTORY.counter
+                    yield f"id: {msg_id}\ndata: {json.dumps(payload)}\n\n"
+                except queue.Empty:
+                    # Send heartbeat to detect disconnected clients
+                    yield ": heartbeat\n\n"
         finally:
             _MASTER_SUBSCRIBERS.discard(q)
 
@@ -4339,15 +4612,39 @@ def respond_to_orchestrator(orch_id):
 
 @APP.get("/tasks/stream")
 def stream_tasks():
+    # Check for reconnection with Last-Event-ID
+    last_event_id = request.headers.get('Last-Event-ID')
+    last_id = None
+    if last_event_id:
+        try:
+            last_id = int(last_event_id)
+        except (ValueError, TypeError):
+            pass
+
     def generate():
         q = queue.Queue(maxsize=100)
         _TASK_SUBSCRIBERS.add(q)
         try:
+            # Replay missed messages if reconnecting
+            if last_id is not None:
+                missed = _TASK_STREAM_HISTORY.replay_from(last_id)
+                for msg_id, payload in missed:
+                    yield f"id: {msg_id}\ndata: {json.dumps({'type': 'snapshot', **payload})}\n\n"
+
+            # Send current snapshot
             snapshot = _build_tasks_snapshot()
-            yield f"data: {json.dumps({'type': 'snapshot', **snapshot})}\n\n"
+            msg_id = _TASK_STREAM_HISTORY.add(snapshot)
+            yield f"id: {msg_id}\ndata: {json.dumps({'type': 'snapshot', **snapshot})}\n\n"
+
             while True:
-                payload = q.get()
-                yield f"data: {json.dumps({'type': 'snapshot', **payload})}\n\n"
+                try:
+                    payload = q.get(timeout=15)
+                    # Message ID is already assigned in broadcast function
+                    msg_id = _TASK_STREAM_HISTORY.counter
+                    yield f"id: {msg_id}\ndata: {json.dumps({'type': 'snapshot', **payload})}\n\n"
+                except queue.Empty:
+                    # Send heartbeat to detect disconnected clients
+                    yield ": heartbeat\n\n"
         finally:
             _TASK_SUBSCRIBERS.discard(q)
 
@@ -4762,6 +5059,10 @@ def get_usage_stats():
 if __name__ == "__main__":
     # Migrate legacy .codex_ files to new names
     _migrate_legacy_files()
+
+    # Ensure Copilot session-state directory exists
+    copilot_session_dir = pathlib.Path.home() / ".copilot" / "session-state"
+    copilot_session_dir.mkdir(parents=True, exist_ok=True)
 
     # Startup cleanup: Clear any stuck "running" statuses from previous runs
     with _TASK_LOCK:
