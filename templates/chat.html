@@ -894,13 +894,108 @@
         max-width: 100%;
         width: 100%;
       }
-      .msg.assistant { 
+      .msg.assistant {
         background: var(--assistant);
         line-height: 1.6;
       }
       .msg.assistant.cli {
         background: #0b0f16;
         border: 1px solid rgba(148, 163, 184, 0.25);
+      }
+      .msg.error {
+        background: rgba(239, 68, 68, 0.1);
+        border: 1px solid rgba(239, 68, 68, 0.3);
+        color: #fca5a5;
+        line-height: 1.6;
+      }
+      .msg.orchestrator-question {
+        background: rgba(59, 130, 246, 0.1);
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        border-left: 3px solid var(--session-color, #3b82f6);
+        padding: 1rem;
+        margin: 0.75rem 0;
+      }
+      .orch-question-header {
+        font-size: 14px;
+        margin-bottom: 0.5rem;
+        color: #94a3b8;
+      }
+      .orch-question-header strong {
+        color: var(--session-color, #3b82f6);
+      }
+      .orch-question-text {
+        font-size: 15px;
+        line-height: 1.6;
+        margin-bottom: 1rem;
+        color: #e2e8f0;
+      }
+      .orch-response-area {
+        display: flex;
+        gap: 0.5rem;
+        align-items: center;
+      }
+      .orch-response-input {
+        flex: 1;
+        padding: 0.5rem 0.75rem;
+        background: rgba(15, 23, 42, 0.6);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 6px;
+        color: #e2e8f0;
+        font-size: 14px;
+      }
+      .orch-response-input:focus {
+        outline: none;
+        border-color: var(--session-color, #3b82f6);
+      }
+      .orch-response-btn {
+        padding: 0.5rem 1rem;
+        background: var(--session-color, #3b82f6);
+        color: white;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .orch-response-btn:hover {
+        opacity: 0.9;
+      }
+      .orch-question-answered {
+        padding: 0.75rem;
+        background: rgba(34, 197, 94, 0.1);
+        border: 1px solid rgba(34, 197, 94, 0.3);
+        border-radius: 6px;
+        color: #86efac;
+        font-size: 14px;
+      }
+      .msg.orchestrator-completion {
+        background: rgba(34, 197, 94, 0.1);
+        border: 1px solid rgba(34, 197, 94, 0.3);
+        border-left: 3px solid #22c55e;
+        padding: 1rem;
+        margin: 0.75rem 0;
+      }
+      .orch-completion-header {
+        font-size: 15px;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+        color: #86efac;
+      }
+      .orch-completion-text {
+        font-size: 14px;
+        line-height: 1.6;
+        color: #cbd5e1;
+        margin-bottom: 0.5rem;
+      }
+      .orch-completion-summary,
+      .orch-completion-goal {
+        font-size: 13px;
+        line-height: 1.5;
+        color: #94a3b8;
+        padding: 0.5rem;
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 4px;
+        margin-top: 0.5rem;
       }
       .msg.user.cli {
         background: #0b0f16;
@@ -1201,6 +1296,9 @@
       }
       .master-suggest button:hover {
         background: rgba(148, 163, 184, 0.12);
+      }
+      .master-suggest button.selected {
+        background: rgba(148, 163, 184, 0.18);
       }
       .prompt-mirror .master-prefix {
         font-weight: 400;
@@ -1673,10 +1771,9 @@
         <div class="form-group">
           <label for="newSessionModel">Model</label>
           <select id="newSessionModel">
-            <option value="codex">codex</option>
-            <option value="copilot">copilot</option>
-            <option value="gemini">gemini</option>
-            <option value="claude">claude</option>
+            {% for p in available_providers %}
+            <option value="{{ p }}">{{ p }}</option>
+            {% endfor %}
           </select>
         </div>
         <div class="form-group">
@@ -2139,10 +2236,9 @@
           </div>
         </div>
         <select id="providerSelect" name="provider" class="hidden">
-          <option value="codex">codex</option>
-          <option value="copilot">copilot</option>
-          <option value="gemini">gemini</option>
-          <option value="claude">claude</option>
+          {% for p in available_providers %}
+          <option value="{{ p }}">{{ p }}</option>
+          {% endfor %}
         </select>
         <input type="checkbox" id="force_new" class="hidden" />
         <div class="cwd-row">
@@ -2229,9 +2325,16 @@
       const selectedOrchId = "{{ selected_orchestrator.id if selected_orchestrator else '' }}";
       const providerModels = {{ provider_models|tojson }};
       const initialOrchestrators = {{ orchestrators|tojson }};
+      const availableProviders = {{ available_providers|tojson }};
+      let selectedSuggestionIndex = -1;
       consumeNavScroll();
       requestAnimationFrame(() => applyPendingNavScroll());
       setTimeout(() => applyPendingNavScroll(), 250);
+
+      // Auto-focus prompt input in master mode
+      if (masterMode && promptInput) {
+        requestAnimationFrame(() => promptInput.focus());
+      }
 
       function getNavPanel() {
         return document.querySelector(".sessions");
@@ -2573,6 +2676,123 @@
         return div;
       }
 
+      function addOrchestratorQuestion(data) {
+        const { session_name, orchestrator_id, orchestrator_name, question } = data;
+        if (!session_name || !orchestrator_id || !question) return;
+
+        const container = document.createElement("div");
+        container.className = "msg orchestrator-question";
+        container.style.setProperty("--session-color", colorForSession(session_name));
+
+        const header = document.createElement("div");
+        header.className = "orch-question-header";
+        header.innerHTML = `<strong>@@${session_name}</strong> asks:`;
+
+        const questionText = document.createElement("div");
+        questionText.className = "orch-question-text";
+        questionText.textContent = question;
+
+        const responseArea = document.createElement("div");
+        responseArea.className = "orch-response-area";
+
+        const input = document.createElement("input");
+        input.type = "text";
+        input.placeholder = "Your response...";
+        input.className = "orch-response-input";
+
+        const sendBtn = document.createElement("button");
+        sendBtn.textContent = "Send";
+        sendBtn.className = "orch-response-btn";
+        sendBtn.onclick = () => sendOrchestratorResponse(orchestrator_id, input.value, container);
+
+        input.addEventListener("keypress", (e) => {
+          if (e.key === "Enter" && input.value.trim()) {
+            sendOrchestratorResponse(orchestrator_id, input.value, container);
+          }
+        });
+
+        responseArea.appendChild(input);
+        responseArea.appendChild(sendBtn);
+
+        container.appendChild(header);
+        container.appendChild(questionText);
+        container.appendChild(responseArea);
+
+        if (messages) {
+          messages.appendChild(container);
+          scrollToBottom();
+        }
+      }
+
+      function addOrchestratorCompletion(data) {
+        const { session_name, orchestrator_name, goal, summary, message } = data;
+        if (!session_name || !message) return;
+
+        const container = document.createElement("div");
+        container.className = "msg orchestrator-completion";
+        container.style.setProperty("--session-color", colorForSession(session_name));
+
+        const header = document.createElement("div");
+        header.className = "orch-completion-header";
+        header.innerHTML = `<strong>✅ ${orchestrator_name || 'Orchestrator'}</strong>`;
+
+        const messageText = document.createElement("div");
+        messageText.className = "orch-completion-text";
+        messageText.textContent = `Goal reached for session '${session_name}'`;
+
+        if (summary) {
+          const summaryText = document.createElement("div");
+          summaryText.className = "orch-completion-summary";
+          summaryText.textContent = summary;
+          container.appendChild(header);
+          container.appendChild(messageText);
+          container.appendChild(summaryText);
+        } else if (goal) {
+          const goalText = document.createElement("div");
+          goalText.className = "orch-completion-goal";
+          goalText.textContent = `Goal: ${goal}`;
+          container.appendChild(header);
+          container.appendChild(messageText);
+          container.appendChild(goalText);
+        } else {
+          container.appendChild(header);
+          container.appendChild(messageText);
+        }
+
+        if (messages) {
+          messages.appendChild(container);
+          scrollToBottom();
+        }
+      }
+
+      async function sendOrchestratorResponse(orchestratorId, response, container) {
+        const trimmed = response.trim();
+        if (!trimmed) return;
+
+        try {
+          const res = await fetch(`/orchestrators/${orchestratorId}/respond`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ response: trimmed })
+          });
+
+          if (res.ok) {
+            // Replace the question UI with a confirmation message
+            container.innerHTML = `
+              <div class="orch-question-answered">
+                <strong>You responded:</strong> ${escapeHtml(trimmed)}
+              </div>
+            `;
+          } else {
+            const error = await res.json();
+            alert(`Error: ${error.error || "Failed to send response"}`);
+          }
+        } catch (err) {
+          console.error("Error sending response:", err);
+          alert("Failed to send response. Check console for details.");
+        }
+      }
+
       function updateAssistantMessage(el, text, append = true) {
         if (!el) return;
         if (cliMode) {
@@ -2713,6 +2933,13 @@
             }
             if (data.type === "message" && data.session_name && data.text) {
               addMasterMessage(data.session_name, data.text);
+            } else if (data.type === "orchestrator_question") {
+              // Display as regular message, not special bubble
+              if (data.session_name && data.question) {
+                addMasterMessage(data.session_name, data.question);
+              }
+            } else if (data.type === "orchestrator_completion") {
+              addOrchestratorCompletion(data);
             }
           } catch (err) {
             console.error("Master stream error:", err);
@@ -2878,6 +3105,12 @@
         promptInput.addEventListener('input', autoResize);
         promptInput.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
+            // Don't submit if autocomplete dropdown is open
+            const row = promptInput.closest(".prompt-row");
+            const suggest = row ? row.querySelector(".master-suggest") : null;
+            if (suggest && suggest.classList.contains("open")) {
+              return; // Let the other handler deal with autocomplete
+            }
             e.preventDefault();
             chatForm.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
           }
@@ -3448,27 +3681,17 @@
       }
 
       function getSessionNameList() {
+        // NOTE: Orchestrators are intentionally excluded from autocomplete.
+        // Orchestrators only accept specific commands (pause, start, status, goal, sessions),
+        // not conversational messages. Including them in autocomplete gives users the wrong
+        // impression that they can message orchestrators like regular sessions.
+        // Users can still type @@orchestratorName: command manually if needed.
         if (Array.isArray(sessionNameList) && sessionNameList.length) {
-          const names = sessionNameList.slice();
-          if (Array.isArray(orchestratorList)) {
-            orchestratorList.forEach((orch) => {
-              if (orch && orch.name && !names.includes(orch.name)) {
-                names.push(orch.name);
-              }
-            });
-          }
-          return names;
+          return sessionNameList.slice();
         }
         const names = Array.from(document.querySelectorAll(".sessions-list li[data-session-name]"))
           .map((el) => el.getAttribute("data-session-name") || "")
           .filter(Boolean);
-        if (Array.isArray(orchestratorList)) {
-          orchestratorList.forEach((orch) => {
-            if (orch && orch.name && !names.includes(orch.name)) {
-              names.push(orch.name);
-            }
-          });
-        }
         return names;
       }
 
@@ -3563,6 +3786,23 @@
         });
       }
 
+      function updateSuggestionSelection() {
+        if (!masterMode || !promptInput) return;
+        const row = promptInput.closest(".prompt-row");
+        if (!row) return;
+        const suggest = row.querySelector(".master-suggest");
+        if (!suggest) return;
+        const buttons = suggest.querySelectorAll("button[data-suggest]");
+        buttons.forEach((btn, idx) => {
+          if (idx === selectedSuggestionIndex) {
+            btn.classList.add("selected");
+            btn.scrollIntoView({ block: "nearest" });
+          } else {
+            btn.classList.remove("selected");
+          }
+        });
+      }
+
       function updateMasterSuggestions() {
         if (!masterMode || !promptInput) return;
         const row = promptInput.closest(".prompt-row");
@@ -3570,9 +3810,10 @@
         const suggest = row.querySelector(".master-suggest");
         if (!suggest) return;
         const state = getMasterSuggestionState(promptInput.value || "");
-        if (!state || !state.partial) {
+        if (!state || !state.partial || state.tail.startsWith(":")) {
           suggest.classList.remove("open");
           suggest.innerHTML = "";
+          selectedSuggestionIndex = -1;
           return;
         }
         const list = getSessionNameList();
@@ -3580,10 +3821,13 @@
         if (!matches.length) {
           suggest.classList.remove("open");
           suggest.innerHTML = "";
+          selectedSuggestionIndex = -1;
           return;
         }
-        suggest.innerHTML = matches.slice(0, 8).map((name) => {
-          return `<button type="button" data-suggest="${escapeHtml(name)}">@@${escapeHtml(name)}</button>`;
+        selectedSuggestionIndex = -1;
+        suggest.innerHTML = matches.slice(0, 8).map((name, idx) => {
+          const selectedClass = idx === selectedSuggestionIndex ? ' class="selected"' : '';
+          return `<button type="button" data-suggest="${escapeHtml(name)}"${selectedClass}>@@${escapeHtml(name)}</button>`;
         }).join("");
         suggest.classList.add("open");
       }
@@ -3650,6 +3894,25 @@
         if (promptInput) {
           promptInput.addEventListener("keydown", (e) => {
             if (e.key === "Enter" && !e.shiftKey) {
+              // Check if autocomplete dropdown is open
+              if (masterMode) {
+                const row = promptInput.closest(".prompt-row");
+                const suggest = row ? row.querySelector(".master-suggest") : null;
+                if (suggest && suggest.classList.contains("open")) {
+                  const buttons = suggest.querySelectorAll("button[data-suggest]");
+                  if (buttons.length > 0) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    // If no selection made with arrow keys, use the first suggestion
+                    const index = selectedSuggestionIndex >= 0 ? selectedSuggestionIndex : 0;
+                    const name = buttons[index].getAttribute("data-suggest") || "";
+                    if (name) applyMasterSuggestion(name);
+                    suggest.classList.remove("open");
+                    selectedSuggestionIndex = -1;
+                    return;
+                  }
+                }
+              }
               e.preventDefault();
               form.requestSubmit();
               return;
@@ -3660,11 +3923,37 @@
                 e.preventDefault();
                 promptInput.value = next;
                 renderPromptMirror();
+
+                // Close suggestion dropdown
+                const row = promptInput.closest(".prompt-row");
+                const suggest = row ? row.querySelector(".master-suggest") : null;
+                if (suggest) {
+                  suggest.classList.remove("open");
+                }
+
                 // Move caret to end after autocomplete
-                  requestAnimationFrame(() => {
-                    promptInput.focus();
-                    promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
-                  });
+                requestAnimationFrame(() => {
+                  promptInput.focus();
+                  promptInput.selectionStart = promptInput.selectionEnd = promptInput.value.length;
+                });
+              }
+            }
+            if (masterMode && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+              const row = promptInput.closest(".prompt-row");
+              const suggest = row ? row.querySelector(".master-suggest") : null;
+              if (suggest && suggest.classList.contains("open")) {
+                const buttons = suggest.querySelectorAll("button[data-suggest]");
+                if (buttons.length > 0) {
+                  e.preventDefault();
+                  if (e.key === "ArrowDown") {
+                    selectedSuggestionIndex = (selectedSuggestionIndex + 1) % buttons.length;
+                  } else {
+                    selectedSuggestionIndex = selectedSuggestionIndex <= 0
+                      ? buttons.length - 1
+                      : selectedSuggestionIndex - 1;
+                  }
+                  updateSuggestionSelection();
+                }
               }
             }
             if (masterMode && e.key === "Backspace") {
@@ -3812,20 +4101,14 @@
         flyout = document.createElement("div");
         flyout.id = "modelFlyout";
         flyout.className = "model-flyout";
-        flyout.innerHTML = `
-          <button class="menu-item" data-flyout-model="codex">
-            codex${providerModels.codex ? ` <span class="model-hint">(${providerModels.codex})</span>` : ''}
-          </button>
-          <button class="menu-item" data-flyout-model="copilot">
-            copilot${providerModels.copilot ? ` <span class="model-hint">(${providerModels.copilot})</span>` : ''}
-          </button>
-          <button class="menu-item" data-flyout-model="gemini">
-            gemini${providerModels.gemini ? ` <span class="model-hint">(${providerModels.gemini})</span>` : ''}
-          </button>
-          <button class="menu-item" data-flyout-model="claude">
-            claude${providerModels.claude ? ` <span class="model-hint">(${providerModels.claude})</span>` : ''}
-          </button>
-        `;
+
+        // Build menu items only for available providers
+        const menuItems = availableProviders.map(provider => {
+          const modelHint = providerModels[provider] ? ` <span class="model-hint">(${providerModels[provider]})</span>` : '';
+          return `<button class="menu-item" data-flyout-model="${provider}">${provider}${modelHint}</button>`;
+        }).join('');
+
+        flyout.innerHTML = menuItems;
         document.body.appendChild(flyout);
         return flyout;
       }
@@ -5354,12 +5637,12 @@
           return;
         }
         const source = new EventSource("/sessions/stream");
-        
+
         // Clean up on page unload
         window.addEventListener('beforeunload', () => {
           source.close();
         });
-        
+
         source.onmessage = (event) => {
           try {
             const data = JSON.parse(event.data || "{}");
@@ -5382,7 +5665,61 @@
         };
       }
 
+      function wireSessionMessageStream() {
+        // Only connect if viewing a specific session (not master console)
+        if (!window.EventSource || masterMode || !selectedSession) {
+          return;
+        }
+
+        const source = new EventSource(`/sessions/messages/stream?session=${encodeURIComponent(selectedSession)}`);
+
+        // Clean up on page unload
+        window.addEventListener('beforeunload', () => {
+          source.close();
+        });
+
+        source.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data || "{}");
+
+            // Handle different message types
+            if (data.type === "message") {
+              const text = data.text || "";
+              const role = data.role || "assistant";
+              const source = data.source || "unknown";
+
+              // Add message to chat in real-time
+              if (text) {
+                addMessage(text, role);
+                scrollToBottom();
+              }
+            } else if (data.type === "status_change") {
+              // Session status changed (e.g., started thinking) - update status without reload
+              if (selectedSession && data.status) {
+                sessionStatus[selectedSession] = data.status;
+                applyStatus(selectedSession, data.status);
+                updateProviderSelectState();
+                updateMasterCardStatus();
+              }
+            } else if (data.type === "job_complete") {
+              // Job completed - reload messages to show new responses
+              if (data.has_response && selectedSession) {
+                location.reload();
+              }
+            }
+          } catch (err) {
+            console.error("Session message stream error:", err);
+          }
+        };
+
+        source.onerror = () => {
+          console.log("Session message stream closed");
+          source.close();
+        };
+      }
+
       wireSessionStream();
+      wireSessionMessageStream();
     </script>
   </body>
 </html>

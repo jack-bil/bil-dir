@@ -9,62 +9,168 @@ import queue
 import time
 import uuid
 import datetime
-import logging
 from collections import deque
 
 from flask import Flask, jsonify, request, Response, render_template
 
-# Setup logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler('context_debug.log', mode='a')
-    ]
+from utils.config import (
+    logger,
+    APP_START_TIME,
+    DEFAULT_CWD,
+    SESSION_STORE_PATH,
+    HISTORY_STORE_PATH,
+    CLIENT_CONFIG_PATH,
+    LOG_STORE_PATH,
+    MCP_JSON_PATH,
+    PROVIDER_CONFIG_PATH,
+    TASK_STORE_PATH,
+    ORCH_STORE_PATH,
+    CONTEXT_DIR,
+    DEFAULT_PROVIDER,
+    SUPPORTED_PROVIDERS,
+    PROVIDER_ORDER,
+    DEFAULT_ORCH_BASE_PROMPT,
+    DEFAULT_ORCH_WORKER_PROMPT,
+    _get_provider_config,
+    _get_orchestrator_base_prompt,
+    _get_orchestrator_worker_prompt,
+    _full_permissions_enabled,
+    _get_sandbox_mode,
+    _get_provider_model_info,
+    _get_codex_home,
+    _load_client_config,
+    _save_client_config,
 )
-logger = logging.getLogger(__name__)
-logger.info("="*60)
-logger.info("Flask app starting up")
-logger.info("="*60)
-
+from utils.validation import (
+    _validate_name,
+    _validate_provider,
+    _require_json_body,
+    _validate_schedule,
+)
+from providers.base import _filter_debug_messages, _enqueue_output
+from providers.codex import (
+    _run_codex_exec,
+    _run_codex_exec_stream,
+    _resolve_codex_path,
+    _extract_session_id,
+    _extract_codex_assistant_output,
+    _build_codex_args,
+)
+from providers.copilot import (
+    _run_copilot_exec,
+    _resolve_copilot_path,
+    _strip_copilot_footer,
+    _is_copilot_footer_line,
+)
+from providers.gemini import (
+    _run_gemini_exec,
+    _run_gemini_exec_stream,
+    _resolve_gemini_path,
+    _ensure_gemini_policy,
+    _gca_available,
+    _get_gemini_api_key_from_settings,
+)
+from providers.claude import (
+    _run_claude_exec,
+    _run_claude_exec_stream,
+    _resolve_claude_path,
+    _get_latest_claude_session_id,
+    _wait_for_claude_session_id,
+    _is_uuid,
+    _clean_claude_output,
+)
+from core.state import (
+    _SESSION_LOCK,
+    _JOB_LOCK,
+    _TASK_LOCK,
+    _ORCH_LOCK,
+    _PENDING_LOCK,
+    _SESSION_STATUS,
+    _JOBS,
+    _SESSION_SUBSCRIBERS,
+    _TASK_SUBSCRIBERS,
+    _MASTER_SUBSCRIBERS,
+    _SESSION_VIEWERS,
+    _ORCH_STATE,
+    _PENDING_PROMPTS,
+)
+from core.mcp_manager import (
+    _get_mcp_servers,
+    _load_mcp_json,
+    _write_mcp_json_file,
+    _write_codex_mcp_config,
+    _toml_escape,
+)
+from core.session_manager import (
+    _normalize_session_record,
+    _normalize_sessions,
+    _load_sessions,
+    _save_sessions,
+    _get_session_id_for_name,
+    _get_session_provider_for_name,
+    _get_session_workdir,
+    _get_session_status,
+    _session_has_active_job,
+    _set_session_status,
+    _set_session_name,
+    _set_session_provider,
+    _ensure_session_id,
+    _sessions_with_status,
+    _build_session_list,
+    _build_sessions_snapshot,
+    _touch_session,
+    _broadcast_sessions_snapshot,
+)
+from core.task_manager import (
+    _normalize_task,
+    _load_tasks,
+    _save_tasks,
+    _ensure_task_history,
+    _format_task_run_header,
+    _build_task_history_text,
+)
+from core.orchestrator_manager import (
+    _normalize_orchestrator,
+    _load_orchestrators,
+    _save_orchestrators,
+    _build_orchestrator_list,
+    _append_orchestrator_history,
+    _build_orchestrator_history_text,
+    _infer_worker_role,
+    _build_worker_kickoff_prompt,
+    _extract_json_action,
+)
 
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
 APP = Flask(__name__, template_folder=_TEMPLATE_DIR)
 APP.config["TEMPLATES_AUTO_RELOAD"] = True
 APP.jinja_env.auto_reload = True
-APP_START_TIME = time.time()
 
-# Working directory and data paths
-DEFAULT_CWD = os.environ.get("BILDIR_CWD", os.getcwd())
-SESSION_STORE_PATH = os.environ.get("BILDIR_SESSION_STORE", os.path.join(DEFAULT_CWD, "sessions.json"))
-HISTORY_STORE_PATH = os.environ.get("BILDIR_HISTORY_STORE", os.path.join(DEFAULT_CWD, "history.json"))
-CLIENT_CONFIG_PATH = os.environ.get("BILDIR_CLIENT_CONFIG", os.path.join(DEFAULT_CWD, "client_config.json"))
-LOG_STORE_PATH = os.environ.get("BILDIR_LOG_STORE", os.path.join(DEFAULT_CWD, "log.jsonl"))
-MCP_JSON_PATH = os.environ.get("MCP_JSON_PATH", os.path.join(DEFAULT_CWD, "mcp.json"))
-PROVIDER_CONFIG_PATH = os.environ.get("BILDIR_PROVIDER_CONFIG", os.path.join(DEFAULT_CWD, "providers", "config.toml"))
-TASK_STORE_PATH = os.environ.get("BILDIR_TASK_STORE", os.path.join(DEFAULT_CWD, "tasks.json"))
-ORCH_STORE_PATH = os.environ.get("BILDIR_ORCH_STORE", os.path.join(DEFAULT_CWD, "orchestrators.json"))
-CONTEXT_DIR = os.path.join(DEFAULT_CWD, "context")
-DEFAULT_PROVIDER = "codex"
-SUPPORTED_PROVIDERS = {"codex", "copilot", "gemini", "claude"}
-PROVIDER_ORDER = ["codex", "copilot", "gemini", "claude"]
-DEFAULT_ORCH_BASE_PROMPT = (
-    "Act as the manager across any task type. Use the goal and context below to decide the next best action. "
-    "If markdown files exist in the working directory, review them for context. "
-    "Always do the next concrete step toward completion: decide, execute, then report."
-)
-_SESSION_LOCK = threading.RLock()
-_JOB_LOCK = threading.Lock()
-_TASK_LOCK = threading.RLock()
-_SESSION_STATUS = {}
-_JOBS = {}
-_SESSION_SUBSCRIBERS = set()
-_TASK_SUBSCRIBERS = set()
-_MASTER_SUBSCRIBERS = set()
-_ORCH_LOCK = threading.RLock()
-_ORCH_STATE = {}
-_PENDING_LOCK = threading.RLock()
-_PENDING_PROMPTS = {}
+# API Error Codes - Centralized definitions for consistent error handling
+# Validation Errors
+ERR_INVALID_INPUT = "INVALID_INPUT"
+ERR_INVALID_PROMPT = "INVALID_PROMPT"
+ERR_INVALID_TIMEOUT = "INVALID_TIMEOUT"
+ERR_INVALID_PROVIDER = "INVALID_PROVIDER"
+ERR_INVALID_SCHEDULE = "INVALID_SCHEDULE"
+ERR_MISSING_SESSION_NAME = "MISSING_SESSION_NAME"
+ERR_MISSING_REQUIRED_FIELD = "MISSING_REQUIRED_FIELD"
+
+# Resource Not Found Errors
+ERR_NOT_FOUND = "NOT_FOUND"
+ERR_TASK_NOT_FOUND = "TASK_NOT_FOUND"
+ERR_ORCHESTRATOR_NOT_FOUND = "ORCHESTRATOR_NOT_FOUND"
+ERR_SESSION_NOT_FOUND = "SESSION_NOT_FOUND"
+
+# Provider/CLI Errors
+ERR_UNKNOWN_PROVIDER = "UNKNOWN_PROVIDER"
+ERR_CLI_NOT_FOUND = "CLI_NOT_FOUND"
+ERR_NPX_NOT_FOUND = "NPX_NOT_FOUND"
+
+# Operation Errors
+ERR_TIMEOUT = "TIMEOUT"
+ERR_CONFLICT = "CONFLICT"
+ERR_OPERATION_FAILED = "OPERATION_FAILED"
 
 
 def _format_duration(seconds):
@@ -83,53 +189,6 @@ def _format_duration(seconds):
     return " ".join(parts)
 
 
-def _validate_name(value, label="name", max_len=120):
-    if not isinstance(value, str):
-        return f"{label} must be a string"
-    name = value.strip()
-    if not name:
-        return f"{label} is required"
-    if len(name) > max_len:
-        return f"{label} must be {max_len} chars or fewer"
-    if any(ch in name for ch in ["/", "\\", "\0"]):
-        return f"{label} contains invalid characters"
-    if name in {".", ".."}:
-        return f"{label} is invalid"
-    return None
-
-
-def _validate_provider(value, allow_default=False):
-    if not value and allow_default:
-        return None
-    if not isinstance(value, str):
-        return "provider must be a string"
-    if value.lower() not in SUPPORTED_PROVIDERS:
-        return "unknown provider"
-    return None
-
-
-def _require_json_body(allow_empty=False):
-    body = request.get_json(silent=True)
-    if body is None:
-        if allow_empty:
-            return {}, None
-        return None, (jsonify({"error": "invalid or missing JSON body"}), 400)
-    if not isinstance(body, dict):
-        return None, (jsonify({"error": "JSON body must be an object"}), 400)
-    return body, None
-
-
-def _validate_schedule(schedule):
-    if schedule is None:
-        return None
-    if not isinstance(schedule, dict):
-        return "schedule must be an object"
-    sched_type = (schedule.get("type") or "manual").strip().lower()
-    if sched_type not in {"manual", "once", "interval", "daily", "weekly", "monthly"}:
-        return "schedule.type is invalid"
-    return None
-
-
 def _safe_cwd(candidate):
     if candidate:
         return os.path.abspath(candidate)
@@ -138,132 +197,26 @@ def _safe_cwd(candidate):
     return os.path.abspath(default_cwd or DEFAULT_CWD)
 
 
-def _run_codex_exec(
-    prompt,
-    cwd,
-    extra_args=None,
-    timeout_sec=300,
-    resume_session_id=None,
-    resume_last=False,
-    json_events=True,
-    context_briefing=None,
-):
-    """Execute codex with stdin support for multi-line prompts.
-
-    This function uses subprocess.Popen with stdin pipe to support multi-line prompts.
-    Previously used subprocess.run with prompt as command-line arg, which failed for
-    multi-line prompts and caused tasks to hang indefinitely.
+def _error_response(message, code=None, details=None, status=400):
     """
-    if not prompt or not isinstance(prompt, str):
-        raise ValueError("prompt must be a non-empty string")
+    Standard error response format for all API endpoints.
 
-    # Inject context briefing if provided and not resuming
-    if context_briefing and not resume_session_id and not resume_last:
-        logger.info(f"[Context] Injecting {len(context_briefing)} chars of context into codex prompt")
-        prompt = f"""# Session Context
+    Args:
+        message: Human-readable error message
+        code: Optional error code (e.g., "INVALID_INPUT", "NOT_FOUND")
+        details: Optional additional error details (dict)
+        status: HTTP status code (default 400)
 
-Previous conversation history from other providers:
+    Returns:
+        Tuple of (jsonify response, status code)
+    """
+    payload = {"error": message}
+    if code:
+        payload["code"] = code
+    if details:
+        payload["details"] = details
+    return jsonify(payload), status
 
-{context_briefing}
-
----
-
-# Current Request
-
-{prompt}"""
-
-    codex_path = _resolve_codex_path()
-    if not codex_path:
-        raise FileNotFoundError("codex CLI not found (set CODEX_PATH or add to PATH)")
-    args = [codex_path]
-    sandbox_mode = _get_sandbox_mode(_get_provider_config(), "codex")
-    if sandbox_mode:
-        args.extend(["--sandbox", sandbox_mode])
-    args.append("exec")
-    # Always skip git repo trust check to match user's preference.
-    args.append("--skip-git-repo-check")
-    if extra_args:
-        args.extend(extra_args)
-    if json_events:
-        args.append("--json")
-    if resume_session_id or resume_last:
-        args.append("resume")
-        if resume_session_id:
-            args.append(resume_session_id)
-        else:
-            args.append("--last")
-
-    # Use stdin for multi-line prompt support (NOT command-line arg)
-    env = os.environ.copy()
-    if not env.get("CODEX_HOME"):
-        env["CODEX_HOME"] = _get_codex_home()
-    proc = subprocess.Popen(
-        args,
-        cwd=cwd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        env=env,
-    )
-
-    try:
-        # Write prompt to stdin and get output with timeout
-        stdout, stderr = proc.communicate(input=prompt + '\n', timeout=timeout_sec)
-        returncode = proc.returncode
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        returncode = -1
-
-    # Return mock subprocess.CompletedProcess-like object for API compatibility
-    class ProcResult:
-        def __init__(self, returncode, stdout, stderr):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
-
-    return ProcResult(returncode, stdout, stderr), args
-
-
-def _resolve_codex_path():
-    return os.environ.get("CODEX_PATH") or shutil.which("codex") or shutil.which("codex.cmd")
-
-def _get_codex_home():
-    return os.environ.get("CODEX_HOME") or os.path.join(pathlib.Path.home(), ".codex")
-
-
-def _resolve_copilot_path(config):
-    return config.get("copilot_path") or shutil.which("copilot") or shutil.which("copilot.cmd")
-
-
-def _resolve_gemini_path(config):
-    configured = (config.get("gemini_path") or "").strip()
-    if configured:
-        return configured
-    path = shutil.which("gemini") or shutil.which("gemini.cmd")
-    if path:
-        return path
-    # Common Windows npm install locations
-    candidates = [
-        pathlib.Path(os.environ.get("APPDATA", "")) / "npm" / "gemini.cmd",
-        pathlib.Path(os.environ.get("APPDATA", "")) / "npm" / "gemini",
-        pathlib.Path(os.environ.get("USERPROFILE", "")) / "AppData" / "Roaming" / "npm" / "gemini.cmd",
-        pathlib.Path(os.environ.get("USERPROFILE", "")) / "AppData" / "Roaming" / "npm" / "gemini",
-        pathlib.Path(os.environ.get("ProgramFiles", "")) / "nodejs" / "gemini.cmd",
-        pathlib.Path(os.environ.get("ProgramFiles", "")) / "nodejs" / "gemini",
-    ]
-    for candidate in candidates:
-        try:
-            if candidate and candidate.exists():
-                return str(candidate)
-        except Exception:
-            continue
-    return None
-
-def _resolve_claude_path(config):
-    return config.get("claude_path") or shutil.which("claude") or shutil.which("claude.cmd")
 
 def _resolve_npx_path():
     candidates = [
@@ -294,96 +247,9 @@ def _provider_path_status(config):
 def _get_available_providers(config):
     status = _provider_path_status(config)
     available = [p for p in PROVIDER_ORDER if status.get(p)]
-    return available or PROVIDER_ORDER[:]
+    return available
 
-def _get_provider_model_info():
-    """Get current model info for each provider by reading their config files."""
-    models = {}
-    config = _load_client_config()
-    
-    # Codex: read from ~/.codex/config.toml
-    try:
-        codex_config = pathlib.Path.home() / ".codex" / "config.toml"
-        if codex_config.exists():
-            import re
-            content = codex_config.read_text()
-            match = re.search(r'^model\s*=\s*["\']([^"\']+)["\']', content, re.MULTILINE)
-            if match:
-                models["codex"] = match.group(1)
-    except Exception:
-        pass
-    
-    # Copilot: read from client config (user-configurable in this app)
-    copilot_model = (config.get("copilot_model") or "").strip()
-    models["copilot"] = copilot_model if copilot_model else None
-    
-    # Gemini: read from ~/.gemini/settings.json
-    try:
-        gemini_config = pathlib.Path.home() / ".gemini" / "settings.json"
-        if gemini_config.exists():
-            import json
-            data = json.loads(gemini_config.read_text())
-            models["gemini"] = data.get("model")
-    except Exception:
-        pass
-    
-    # Claude: read from ~/.claude/settings.json
-    try:
-        claude_config = pathlib.Path.home() / ".claude" / "settings.json"
-        if claude_config.exists():
-            import json
-            data = json.loads(claude_config.read_text())
-            models["claude"] = data.get("model")
-    except Exception:
-        pass
-    
-    return models
-
-def _get_provider_config():
-    return _load_client_config()
-
-def _get_orchestrator_base_prompt(config):
-    if not isinstance(config, dict):
-        return DEFAULT_ORCH_BASE_PROMPT
-    base = (config.get("orch_base_prompt") or "").strip()
-    return base or DEFAULT_ORCH_BASE_PROMPT
-
-def _full_permissions_enabled(config, provider=None):
-    if not isinstance(config, dict):
-        return True
-    if provider:
-        key = f"full_permissions_{provider}"
-        if key in config:
-            return bool(config.get(key))
-    return bool(config.get("full_permissions", True))
-
-
-def _get_sandbox_mode(config, provider):
-    if not isinstance(config, dict):
-        return ""
-    key = f"sandbox_mode_{provider}"
-    return (config.get(key) or "").strip()
-
-
-def _get_mcp_servers(mcp_data):
-    if not isinstance(mcp_data, dict):
-        return None
-    if isinstance(mcp_data.get("mcpServers"), dict):
-        return mcp_data.get("mcpServers")
-    if isinstance(mcp_data.get("servers"), dict):
-        return mcp_data.get("servers")
-    return None
-
-
-def _load_mcp_json(config):
-    raw = (config or {}).get("mcp_json") or ""
-    raw = raw.strip()
-    if not raw:
-        return None
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid MCP JSON: {exc}") from exc
+ 
 
 
 def _get_gmail_status_message(reason):
@@ -410,8 +276,18 @@ def _gmail_auth_status():
         }
     try:
         data = json.loads(creds_path.read_text(encoding="utf-8"))
-    except Exception:
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        logger.warning(f"Invalid Gmail credentials file: {e}")
         reason = "invalid_credentials"
+        return {
+            "authenticated": False,
+            "status": "warning",
+            "reason": reason,
+            "message": _get_gmail_status_message(reason),
+        }
+    except OSError as e:
+        logger.error(f"Cannot read Gmail credentials: {e}")
+        reason = "read_error"
         return {
             "authenticated": False,
             "status": "warning",
@@ -524,61 +400,6 @@ def _get_sessions_health_status():
     }
 
 
-def _write_mcp_json_file(mcp_data):
-    path = pathlib.Path(MCP_JSON_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if isinstance(mcp_data, dict) and "mcpServers" not in mcp_data and "servers" in mcp_data:
-        normalized = dict(mcp_data)
-        normalized["mcpServers"] = normalized.pop("servers")
-        mcp_data = normalized
-    path.write_text(json.dumps(mcp_data, indent=2), encoding="utf-8")
-    return str(path)
-
-
-def _toml_escape(value):
-    return json.dumps(str(value))
-
-
-def _write_codex_mcp_config(mcp_data):
-    if not isinstance(mcp_data, dict):
-        return None
-    servers = _get_mcp_servers(mcp_data)
-    if not isinstance(servers, dict) or not servers:
-        return None
-    lines = ["[mcp_servers]"]
-    for name, spec in servers.items():
-        if not isinstance(spec, dict):
-            continue
-        lines.append(f"[mcp_servers.{name}]")
-        if spec.get("url"):
-            lines.append(f"url = {_toml_escape(spec.get('url'))}")
-        if spec.get("command"):
-            lines.append(f"command = {_toml_escape(spec.get('command'))}")
-        if isinstance(spec.get("args"), list):
-            args = ", ".join(_toml_escape(x) for x in spec.get("args"))
-            lines.append(f"args = [{args}]")
-        env = spec.get("env")
-        if isinstance(env, dict) and env:
-            entries = ", ".join(f"{k}={_toml_escape(v)}" for k, v in env.items())
-            lines.append(f"env = {{ {entries} }}")
-        lines.append("")
-    path = pathlib.Path(PROVIDER_CONFIG_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
-    return str(path)
-
-
-def _extract_session_id(events):
-    for evt in events:
-        if not isinstance(evt, dict):
-            continue
-        for key in ("session_id", "sessionId", "session", "thread_id", "threadId"):
-            val = evt.get(key)
-            if isinstance(val, str) and val:
-                return val
-    return None
-
-
 def _parse_json_events(text):
     events = []
     for line in text.splitlines():
@@ -592,296 +413,6 @@ def _parse_json_events(text):
     return events
 
 
-def _normalize_session_record(value):
-    if isinstance(value, dict):
-        session_id = value.get("session_id")
-        session_ids = value.get("session_ids")
-        last_used = value.get("last_used")
-        created_at = value.get("created_at")
-        provider = (value.get("provider") or DEFAULT_PROVIDER).lower()
-        if provider not in SUPPORTED_PROVIDERS:
-            provider = DEFAULT_PROVIDER
-        if not isinstance(session_ids, dict):
-            session_ids = {}
-        if session_id and provider and not session_ids.get(provider):
-            session_ids[provider] = session_id
-        record = {
-            "session_id": session_id,
-            "session_ids": session_ids,
-            "provider": provider,
-            "last_used": last_used,
-            "created_at": created_at,
-        }
-        # Preserve workdir if set
-        workdir = (value.get("workdir") or "").strip()
-        if workdir:
-            record["workdir"] = workdir
-        return record
-    if isinstance(value, str):
-        return {
-            "session_id": value,
-            "session_ids": {},
-            "provider": DEFAULT_PROVIDER,
-            "last_used": None,
-            "created_at": None,
-        }
-    return {
-        "session_id": None,
-        "session_ids": {},
-        "provider": DEFAULT_PROVIDER,
-        "last_used": None,
-        "created_at": None,
-    }
-
-
-def _normalize_sessions(data):
-    sessions = {}
-    if not isinstance(data, dict):
-        return sessions
-    for name, value in data.items():
-        sessions[name] = _normalize_session_record(value)
-    return sessions
-
-
-def _normalize_task(value):
-    if not isinstance(value, dict):
-        return None
-    task_id = value.get("id") or value.get("task_id") or uuid.uuid4().hex
-    name = (value.get("name") or "").strip() or f"task-{task_id[:6]}"
-    prompt = (value.get("prompt") or "").strip()
-    provider = (value.get("provider") or DEFAULT_PROVIDER).lower()
-    if provider not in SUPPORTED_PROVIDERS:
-        provider = DEFAULT_PROVIDER
-    schedule = value.get("schedule") if isinstance(value.get("schedule"), dict) else {"type": "manual"}
-    workdir = (value.get("workdir") or "").strip()
-    enabled = bool(value.get("enabled", True))
-    last_run = value.get("last_run")
-    next_run = value.get("next_run")
-    last_status = value.get("last_status")
-    last_output = value.get("last_output")
-    last_output_raw = value.get("last_output_raw")
-    last_error = value.get("last_error")
-    run_history = value.get("run_history")
-    last_runtime_sec = value.get("last_runtime_sec")
-    if not isinstance(run_history, list):
-        run_history = []
-    return {
-        "id": task_id,
-        "name": name,
-        "prompt": prompt,
-        "provider": provider,
-        "schedule": schedule,
-        "workdir": workdir,
-        "enabled": enabled,
-        "last_run": last_run,
-        "next_run": next_run,
-        "last_status": last_status,
-        "last_output": last_output,
-        "last_output_raw": last_output_raw,
-        "last_error": last_error,
-        "last_runtime_sec": last_runtime_sec,
-        "run_history": run_history,
-    }
-
-
-def _load_tasks():
-    path = pathlib.Path(TASK_STORE_PATH)
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    tasks = {}
-    if isinstance(raw, dict):
-        for key, value in raw.items():
-            task = _normalize_task(value)
-            if task:
-                tasks[task["id"]] = task
-    elif isinstance(raw, list):
-        for value in raw:
-            task = _normalize_task(value)
-            if task:
-                tasks[task["id"]] = task
-    return tasks
-
-
-def _save_tasks(tasks):
-    path = pathlib.Path(TASK_STORE_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = {task_id: task for task_id, task in (tasks or {}).items()}
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-def _normalize_orchestrator(value):
-    if not isinstance(value, dict):
-        return None
-    orch_id = value.get("id") or uuid.uuid4().hex
-    name = (value.get("name") or "").strip() or f"orch-{orch_id[:6]}"
-    provider = (value.get("provider") or DEFAULT_PROVIDER).lower()
-    if provider not in SUPPORTED_PROVIDERS:
-        provider = DEFAULT_PROVIDER
-    managed = value.get("managed_sessions")
-    if not isinstance(managed, list):
-        managed = []
-    goal = (value.get("goal") or "").strip()
-    enabled = bool(value.get("enabled", False))
-    created_at = value.get("created_at")
-    history = value.get("history")
-    if not isinstance(history, list):
-        history = []
-    last_action = value.get("last_action")
-    last_decision_at = value.get("last_decision_at")
-    last_question = value.get("last_question")
-    return {
-        "id": orch_id,
-        "name": name,
-        "provider": provider,
-        "managed_sessions": managed,
-        "goal": goal,
-        "enabled": enabled,
-        "created_at": created_at,
-        "history": history,
-        "last_action": last_action,
-        "last_decision_at": last_decision_at,
-        "last_question": last_question,
-    }
-
-
-def _load_orchestrators():
-    path = pathlib.Path(ORCH_STORE_PATH)
-    if not path.exists():
-        return {}
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        return {}
-    items = {}
-    if isinstance(raw, dict):
-        for key, value in raw.items():
-            orch = _normalize_orchestrator(value)
-            if orch:
-                items[orch["id"]] = orch
-    elif isinstance(raw, list):
-        for value in raw:
-            orch = _normalize_orchestrator(value)
-            if orch:
-                items[orch["id"]] = orch
-    return items
-
-
-def _save_orchestrators(data):
-    path = pathlib.Path(ORCH_STORE_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {orch_id: orch for orch_id, orch in (data or {}).items()}
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-def _build_orchestrator_list():
-    with _ORCH_LOCK:
-        items = list(_load_orchestrators().values())
-    items.sort(key=lambda item: item.get("created_at") or "", reverse=True)
-    return items
-
-def _append_orchestrator_history(orch_id, orch, entry):
-    if not orch_id or not entry:
-        return
-    with _ORCH_LOCK:
-        data = _load_orchestrators()
-        current = data.get(orch_id) or orch or {}
-        history = current.get("history")
-        if not isinstance(history, list):
-            history = []
-        history.append(entry)
-        if len(history) > 200:
-            history = history[-200:]
-        current["history"] = history
-        data[orch_id] = current
-        _save_orchestrators(data)
-
-
-def _build_orchestrator_history_text(history):
-    if not history:
-        return ""
-    lines = []
-    for item in history:
-        if not isinstance(item, dict):
-            continue
-        ts = item.get("at") or ""
-        action = item.get("action") or ""
-        target = item.get("target_session") or ""
-        prompt = item.get("prompt") or ""
-        question = item.get("question") or ""
-        raw = item.get("raw") or ""
-        header_parts = []
-        if ts:
-            header_parts.append(f"[{ts}]")
-        if action:
-            header_parts.append(action)
-        if target:
-            header_parts.append(f"target={target}")
-        header = " ".join(header_parts).strip()
-        body = prompt or question or raw or ""
-        if header and body:
-            lines.append(f"{header}\n{body}".rstrip())
-        elif header:
-            lines.append(header)
-        elif body:
-            lines.append(body)
-    return "\n\n".join(lines).strip()
-
-def _ensure_task_history(task):
-    if not task or task.get("run_history"):
-        return task
-    has_any = task.get("last_output") or task.get("last_output_raw") or task.get("last_error")
-    if not has_any:
-        return task
-    run = {
-        "finished_at": task.get("last_run"),
-        "started_at": task.get("last_run"),
-        "runtime_sec": task.get("last_runtime_sec"),
-        "status": task.get("last_status") or "ok",
-        "output": task.get("last_output") or "",
-        "raw_output": task.get("last_output_raw") or "",
-        "error": task.get("last_error"),
-    }
-    task["run_history"] = [run]
-    return task
-
-
-def _format_task_run_header(run):
-    finished_at = run.get("finished_at") or run.get("run_at") or ""
-    status = run.get("status") or ""
-    runtime = run.get("runtime_sec")
-    if isinstance(runtime, (int, float)):
-        runtime_text = f"{runtime:.2f}s"
-    else:
-        runtime_text = "n/a"
-    parts = []
-    if finished_at:
-        parts.append(f"[{finished_at}]")
-    parts.append(f"runtime={runtime_text}")
-    if status:
-        parts.append(f"status={status}")
-    return " ".join(parts).strip()
-
-
-def _build_task_history_text(run_history, field):
-    if not run_history:
-        return ""
-    chunks = []
-    for run in run_history:
-        header = _format_task_run_header(run)
-        body = run.get(field) or ""
-        if not body and run.get("error"):
-            body = str(run.get("error"))
-        if header:
-            chunks.append(f"{header}\n{body}".rstrip())
-        else:
-            chunks.append(str(body).rstrip())
-    return "\n\n".join(chunks).strip()
-
-
 def _get_latest_assistant_message(session_name):
     if not session_name:
         return ""
@@ -893,7 +424,38 @@ def _get_latest_assistant_message(session_name):
     return ""
 
 
+def _get_latest_assistant_message_with_index(session_name):
+    """Get the latest assistant message or error from session history.
+
+    This is used by orchestrators to see the latest output from a session,
+    including error messages so they can react appropriately.
+    """
+    if not session_name:
+        return -1, ""
+    history = _get_history_for_name(session_name)
+    messages = history.get("messages") or []
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
+        if isinstance(msg, dict):
+            role = msg.get("role")
+            # Include both assistant messages and error messages
+            if role in ("assistant", "error"):
+                text_raw = msg.get("text") or ""
+                # Handle text being either a string or a list
+                if isinstance(text_raw, list):
+                    text = "\n".join(str(t) for t in text_raw)
+                else:
+                    text = str(text_raw)
+                return idx, text
+    return -1, ""
+
+
 def _format_recent_history(session_name, limit=5):
+    """Format recent conversation history for orchestrator visibility.
+
+    Returns messages in a clear format that shows who said what,
+    so orchestrators can avoid repeating themselves.
+    """
     history = _get_history_for_name(session_name)
     messages = history.get("messages") or []
     if not messages:
@@ -904,49 +466,30 @@ def _format_recent_history(session_name, limit=5):
         if not isinstance(msg, dict):
             continue
         role = msg.get("role") or "assistant"
-        text = (msg.get("text") or "").strip()
+        # Handle text being either a string or a list (defensive programming)
+        text_raw = msg.get("text") or ""
+        if isinstance(text_raw, list):
+            text = "\n".join(str(t) for t in text_raw).strip()
+        else:
+            text = str(text_raw).strip()
         if not text:
             continue
-        lines.append(f"{role}: {text}")
+
+        # Format role names clearly so orchestrator knows who said what
+        if role == "system":
+            # System messages are from orchestrator
+            role_label = "Orchestrator"
+        elif role == "user":
+            role_label = "User"
+        elif role == "assistant":
+            role_label = "Assistant"
+        elif role == "error":
+            role_label = "Error"
+        else:
+            role_label = role.capitalize()
+
+        lines.append(f"[{role_label}] {text}")
     return "\n".join(lines).strip()
-
-
-def _infer_worker_role(goal):
-    text = (goal or "").lower()
-    if any(k in text for k in ["test", "qa", "verify", "validation"]):
-        return "tester"
-    if any(k in text for k in ["research", "investigate", "find", "analyze", "compare"]):
-        return "researcher"
-    if any(k in text for k in ["design", "ui", "ux", "layout", "style"]):
-        return "designer"
-    if any(k in text for k in ["write", "draft", "document", "doc", "spec"]):
-        return "writer"
-    return "developer"
-
-
-def _build_worker_kickoff_prompt(goal, role):
-    return (
-        f"Project goal:\n{goal}\n\n"
-        f"You are the {role} working for a manager. Begin implementation immediately. "
-        "Do not act as the manager; focus on execution and report progress with concrete results."
-    )
-
-
-def _extract_json_action(text):
-    if not text:
-        return None
-    start = text.find("{")
-    if start == -1:
-        return None
-    for end in range(len(text), start, -1):
-        chunk = text[start:end]
-        try:
-            data = json.loads(chunk)
-            if isinstance(data, dict):
-                return data
-        except json.JSONDecodeError:
-            continue
-    return None
 
 
 def _extract_agent_text_from_events(events):
@@ -966,41 +509,64 @@ def _extract_agent_text_from_events(events):
     return "\n".join(parts).strip()
 
 
+def _session_has_orchestrator(session_name):
+    """Check if a session has an enabled orchestrator managing it."""
+    if not session_name:
+        return False
+    try:
+        orchestrators = _load_orchestrators()
+        for orch_id, orch in orchestrators.items():
+            if not orch.get("enabled"):
+                continue
+            managed = orch.get("managed_sessions") or []
+            if session_name in managed:
+                return True
+    except Exception as e:
+        logger.warning(f"Error checking orchestrator for session {session_name}: {e}")
+    return False
+
+
 def _run_orchestrator_decision(orch, session_name, latest_output):
     provider = orch.get("provider") or DEFAULT_PROVIDER
     goal = orch.get("goal") or ""
     managed = orch.get("managed_sessions") or []
     config = _get_provider_config()
     base_prompt = _get_orchestrator_base_prompt(config)
-    history_text = _format_recent_history(session_name, limit=5)
-    prompt = f"""TASK: Decide the next action for orchestrator "{orch.get('name')}". Respond with ONLY valid JSON.
 
-Manager instructions:
+    # Build context for ALL managed sessions (not just the current one)
+    session_contexts = []
+    for managed_session_name in managed:
+        managed_wd = _get_session_workdir(managed_session_name)
+        # Use DEFAULT_CWD if no workdir is set for the session
+        actual_wd = managed_wd or DEFAULT_CWD
+        session_contexts.append(f"  - {managed_session_name}: {actual_wd}")
+
+    session_context_text = "\n".join(session_contexts) if session_contexts else "  (none)"
+    history_text = _format_recent_history(session_name, limit=10)
+    prompt = f"""You are helping manage an AI coding assistant working on a project.
+
+YOUR JOB:
 {base_prompt}
 
-Goal:
-{goal}
+RULES:
+- If the goal is achieved, return done
+- If you can take another step toward the goal, send a message to continue the work
+- Only ask_human if you truly need their input
+- Review the conversation history to avoid repeating yourself
+- If unsure what to do next, return done
 
-This orchestrator ONLY manages these sessions: {", ".join(managed) if managed else "none"}.
-Managed session just became idle: {session_name}
-Latest output:
-{latest_output}
+WORKING DIRECTORIES (where the project is stored):
+{session_context_text}
 
-Recent conversation (last 5 messages, if any):
-{history_text or "None"}
-
-Respond with one of:
-{{"action":"inject_prompt","target_session":"<name>","prompt":"..."}}
-{{"action":"wait"}}
+You MUST respond using exactly ONE of these JSON formats and nothing else:
+{{"action":"continue","message":"your next message to the conversation"}}
+{{"action":"done"}}
 {{"action":"ask_human","question":"..."}}
 
-Rules:
-- Output exactly ONE JSON object.
-- Do not include any other keys, commentary, or metadata.
-- If unsure, return {{"action":"wait"}}.
-- Prefer inject_prompt over ask_human.
-- Do NOT ask the human to choose an orchestrator.
-- If you inject, target_session MUST be the managed session name shown above.
+GOAL: {goal}
+
+RECENT CONVERSATION:
+{history_text or "None"}
 """
     cwd = _safe_cwd(None)
     try:
@@ -1027,6 +593,42 @@ Rules:
     return parsed
 
 
+def _maybe_orchestrator_kickoff(orch_id, orch, session_name):
+    if not orch or not session_name:
+        return False
+    history = _get_history_for_name(session_name)
+    if history.get("messages"):
+        return False
+    for h in (orch.get("history") or []):
+        if h.get("action") == "kickoff" and h.get("target_session") == session_name:
+            return False
+    role = _infer_worker_role(orch.get("goal") or "")
+    config = _load_client_config()
+    kickoff_template = _get_orchestrator_worker_prompt(config)
+    session_workdir = _get_session_workdir(session_name)
+    kickoff = _build_worker_kickoff_prompt(
+        orch.get("goal") or "",
+        role,
+        kickoff_template,
+        session_workdir,
+    )
+    _inject_prompt_to_session(session_name, kickoff)
+    now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+    _append_orchestrator_history(
+        orch_id,
+        orch,
+        {
+            "at": now_iso,
+            "action": "kickoff",
+            "target_session": session_name,
+            "prompt": kickoff,
+            "question": "",
+            "raw": "",
+        },
+    )
+    return True
+
+
 def _inject_prompt_to_session(session_name, prompt):
     if not session_name or not prompt:
         return
@@ -1034,9 +636,27 @@ def _inject_prompt_to_session(session_name, prompt):
         return
     provider = _get_session_provider_for_name(session_name)
     resume_session_id = _get_session_id_for_name(session_name)
+    if not resume_session_id:
+        resume_session_id = _ensure_session_id(session_name, provider)
     session_workdir = _get_session_workdir(session_name)
     cwd = _safe_cwd(session_workdir or None)
+    if resume_session_id:
+        _append_history(
+            resume_session_id,
+            session_name,
+            {"messages": [{"role": "system", "text": f"[Orchestrator] {prompt}"}], "tool_outputs": []},
+        )
+
+    # Broadcast orchestrator message to viewers of this session in real-time
+    _broadcast_session_message(session_name, {
+        "type": "message",
+        "source": "orchestrator",
+        "role": "system",
+        "text": f"[Orchestrator] {prompt}"
+    })
+
     job_key = f"{provider}:{session_name}"
+    start_job = None
     with _JOB_LOCK:
         existing = _JOBS.get(job_key)
         if existing and not existing.done.is_set():
@@ -1054,8 +674,15 @@ def _inject_prompt_to_session(session_name, prompt):
             provider,
         )
         _JOBS[job_key] = job
+        start_job = job
+    if start_job:
         _set_session_status(session_name, "running")
-        _start_job(job)
+        # Notify session viewers that status changed to running (show thinking indicator)
+        _broadcast_session_message(session_name, {
+            "type": "status_change",
+            "status": "running"
+        })
+        _start_job(start_job)
 
 
 def _schedule_summary(task):
@@ -1076,6 +703,17 @@ def _schedule_summary(task):
         if day_text:
             return f"Weekly {day_text}"
         return "Weekly"
+    if kind == "monthly":
+        day = schedule.get("day_of_month")
+        at = schedule.get("time") or ""
+        recur = schedule.get("recur_months", 1)
+        try:
+            recur = int(recur)
+        except (TypeError, ValueError):
+            recur = 1
+        if recur > 1:
+            return f"Every {recur} months on day {day} at {at}".strip()
+        return f"Monthly on day {day} at {at}".strip()
     if kind == "once":
         at = schedule.get("time") or ""
         return f"Once {at}".strip()
@@ -1094,11 +732,19 @@ def _compute_next_run(task, now=None):
         except (TypeError, ValueError):
             return None
         return now + datetime.timedelta(minutes=max(1, minutes))
-    if kind in ("daily", "weekly", "once"):
+    if kind in ("daily", "weekly", "once", "monthly"):
         time_str = schedule.get("time") or ""
         try:
-            hour, minute = [int(x) for x in time_str.split(":", 1)]
-        except Exception:
+            if not time_str:
+                raise ValueError("Empty time string")
+            parts = time_str.split(":", 1)
+            if len(parts) != 2:
+                raise ValueError(f"Invalid time format: '{time_str}'")
+            hour, minute = int(parts[0]), int(parts[1])
+            if not (0 <= hour <= 23) or not (0 <= minute <= 59):
+                raise ValueError(f"Time out of range: {hour}:{minute}")
+        except ValueError as e:
+            logger.warning(f"Invalid schedule time for task {task.get('id', 'unknown')}: {e}")
             return None
         base = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
         if kind == "daily":
@@ -1122,6 +768,54 @@ def _compute_next_run(task, now=None):
                 candidate = current + datetime.timedelta(days=offset)
                 if candidate.weekday() in target_days and candidate > now:
                     return candidate
+            return None
+        if kind == "monthly":
+            # Get day of month (1-31)
+            day_of_month = schedule.get("day_of_month")
+            try:
+                day_of_month = int(day_of_month)
+                if day_of_month < 1 or day_of_month > 31:
+                    return None
+            except (TypeError, ValueError):
+                return None
+            # Get recurrence (every N months, default 1)
+            recur_months = schedule.get("recur_months", 1)
+            try:
+                recur_months = max(1, int(recur_months))
+            except (TypeError, ValueError):
+                recur_months = 1
+            # Start from start_date if provided, otherwise current month
+            start_date_str = schedule.get("start_date")
+            if start_date_str:
+                try:
+                    start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d")
+                    candidate = start_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                except (ValueError, TypeError):
+                    candidate = base
+            else:
+                candidate = base
+            # Find next valid occurrence
+            # Try current month, then next months
+            for _ in range(24):  # Check up to 24 months ahead
+                try:
+                    # Try to set the day of month
+                    if candidate.day != day_of_month:
+                        candidate = candidate.replace(day=day_of_month)
+                    if candidate > now:
+                        return candidate
+                except ValueError:
+                    # Day doesn't exist in this month (e.g., Feb 31), skip to next month
+                    pass
+                # Move to next occurrence (add recur_months)
+                month = candidate.month + recur_months
+                year = candidate.year
+                while month > 12:
+                    month -= 12
+                    year += 1
+                try:
+                    candidate = candidate.replace(year=year, month=month, day=1)
+                except ValueError:
+                    return None
             return None
     return None
 
@@ -1178,8 +872,11 @@ def _task_stream_publish(task_id, event, data=None):
     for q in queues:
         try:
             q.put_nowait(payload)
-        except Exception:
+        except queue.Full:
+            # Queue is full, skip this subscriber
             continue
+        except Exception as e:
+            logger.warning(f"Failed to publish to task stream for {task_id}: {e}")
 
 
 def _migrate_legacy_files():
@@ -1211,46 +908,6 @@ def _migrate_legacy_files():
             logger.info(f"Migrated .codex_sessions/ -> context/")
         except Exception as e:
             logger.warning(f"Failed to migrate context directory: {e}")
-
-
-def _load_sessions():
-    path = pathlib.Path(SESSION_STORE_PATH)
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return _normalize_sessions(data)
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _save_sessions(data):
-    path = pathlib.Path(SESSION_STORE_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-
-def _load_client_config():
-    path = pathlib.Path(CLIENT_CONFIG_PATH)
-    if not path.exists():
-        return {"copilot_permissions": "allow-all-paths", "copilot_enable_mcp": False}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return {"copilot_permissions": "allow-all-paths", "copilot_enable_mcp": False}
-        if not data.get("copilot_permissions"):
-            data["copilot_permissions"] = "allow-all-paths"
-        if "copilot_enable_mcp" not in data:
-            data["copilot_enable_mcp"] = False
-        return data
-    except (OSError, json.JSONDecodeError):
-        return {"copilot_permissions": "allow-all-paths", "copilot_enable_mcp": False}
-
-
-def _save_client_config(data):
-    path = pathlib.Path(CLIENT_CONFIG_PATH)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def _get_history_path(workdir=None):
@@ -1473,7 +1130,8 @@ def _load_context_briefing_text(session_name):
         return ""
     try:
         return context_file.read_text(encoding="utf-8", errors="ignore").strip()
-    except Exception:
+    except OSError as e:
+        logger.warning(f"Cannot read context file for {session_name}: {e}")
         return ""
 
 
@@ -1487,8 +1145,8 @@ def _slice_context_tail(text, max_chars=4000):
         for start in reversed(headings):
             if len(text) - start <= max_chars:
                 return text[start:].lstrip()
-    except Exception:
-        pass
+    except (ImportError, re.error, AttributeError) as e:
+        logger.debug(f"Cannot slice context at heading boundaries: {e}")
     return text[-max_chars:].lstrip()
 
 
@@ -1508,134 +1166,9 @@ def _log_event(payload):
         record = {"ts": time.time(), **payload}
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
-
-
-def _get_session_id_for_name(name):
-    if not name:
-        return None
-    with _SESSION_LOCK:
-        data = _load_sessions()
-        record = data.get(name) or {}
-        provider = (record.get("provider") or DEFAULT_PROVIDER).lower()
-        session_ids = record.get("session_ids") or {}
-        if isinstance(session_ids, dict) and session_ids.get(provider):
-            return session_ids.get(provider)
-        return record.get("session_id")
-
-
-def _get_session_provider_for_name(name):
-    if not name:
-        return DEFAULT_PROVIDER
-    with _SESSION_LOCK:
-        data = _load_sessions()
-        record = data.get(name) or {}
-        provider = (record.get("provider") or DEFAULT_PROVIDER).lower()
-        return provider if provider in SUPPORTED_PROVIDERS else DEFAULT_PROVIDER
-
-
-def _get_session_workdir(name):
-    if not name:
-        return ""
-    with _SESSION_LOCK:
-        data = _load_sessions()
-        record = data.get(name) or {}
-        return (record.get("workdir") or "").strip()
-
-
-def _get_session_status(name):
-    if not name:
-        return "idle"
-    with _SESSION_LOCK:
-        status = _SESSION_STATUS.get(name)
-    return status or "idle"
-
-
-def _session_has_active_job(name):
-    if not name:
-        return False
-    with _JOB_LOCK:
-        for job in _JOBS.values():
-            try:
-                if job.session_name == name and not job.done.is_set():
-                    return True
-            except Exception:
-                continue
-    return False
-
-
-def _set_session_status(name, status):
-    if not name:
-        return
-    with _SESSION_LOCK:
-        prev = _SESSION_STATUS.get(name)
-        _SESSION_STATUS[name] = status
-    if prev != status:
-        _broadcast_sessions_snapshot()
-
-
-def _set_session_name(name, session_id, provider=None):
-    if not name or not session_id:
-        return
-    with _SESSION_LOCK:
-        data = _load_sessions()
-        record = data.get(name) or {"session_id": None, "session_ids": {}, "provider": DEFAULT_PROVIDER}
-        record["session_id"] = session_id
-        record["last_used"] = datetime.datetime.now().isoformat(timespec="seconds")
-        if provider is None:
-            provider = (record.get("provider") or DEFAULT_PROVIDER).lower()
-        if provider not in SUPPORTED_PROVIDERS:
-            provider = DEFAULT_PROVIDER
-        session_ids = record.get("session_ids")
-        if not isinstance(session_ids, dict):
-            session_ids = {}
-        session_ids[provider] = session_id
-        record["session_ids"] = session_ids
-        data[name] = record
-        _save_sessions(data)
-    _broadcast_sessions_snapshot()
-
-
-def _set_session_provider(name, provider):
-    if not name or not provider:
-        return
-    provider = provider.lower()
-    if provider not in SUPPORTED_PROVIDERS:
-        return
-    with _SESSION_LOCK:
-        data = _load_sessions()
-        record = data.get(name) or {"session_id": None, "session_ids": {}, "provider": DEFAULT_PROVIDER}
-        record["provider"] = provider
-        record["session_id"] = (record.get("session_ids") or {}).get(provider)
-        data[name] = record
-        _save_sessions(data)
-    _broadcast_sessions_snapshot()
-
-
-def _ensure_session_id(name, provider):
-    if not name:
-        return None
-    provider = (provider or DEFAULT_PROVIDER).lower()
-    with _SESSION_LOCK:
-        data = _load_sessions()
-        record = data.get(name) or {"session_id": None, "session_ids": {}, "provider": provider}
-        if record.get("provider") != provider:
-            record["provider"] = provider
-        session_ids = record.get("session_ids")
-        if not isinstance(session_ids, dict):
-            session_ids = {}
-        if not session_ids.get(provider):
-            if provider in {"copilot", "claude"}:
-                session_ids[provider] = None
-            else:
-                session_ids[provider] = f"{provider}-{uuid.uuid4().hex}"
-        record["session_ids"] = session_ids
-        record["session_id"] = session_ids.get(provider)
-        data[name] = record
-        _save_sessions(data)
-        _broadcast_sessions_snapshot()
-        return record["session_id"]
+    except (OSError, json.JSONEncodeError) as e:
+        # Log to stderr since we can't write to log file
+        logger.error(f"Failed to write event log: {e}")
 
 
 def _append_history(session_id, session_name, conversation):
@@ -1671,80 +1204,29 @@ def _append_history(session_id, session_name, conversation):
         data[session_id] = entry
         _save_history(data, workdir)
 
-    assistant_text = ""
-    for msg in reversed(messages):
-        if isinstance(msg, dict) and msg.get("role") == "assistant":
-            assistant_text = msg.get("text") or ""
-            if assistant_text:
-                break
-    if assistant_text and session_name:
-        _broadcast_master_message(session_name, assistant_text)
 
-
-
-
-def _sessions_with_status(sessions):
-    status = {}
-    for name in sessions.keys():
-        current = _get_session_status(name)
-        if current == "running" and not _session_has_active_job(name):
-            with _SESSION_LOCK:
-                _SESSION_STATUS[name] = "idle"
-            current = "idle"
-        status[name] = current
-    return status
-
-
-def _build_session_list(sessions):
-    items = []
-    for name, record in sessions.items():
-        items.append(
-            {
-                "name": name,
-                "session_id": record.get("session_id"),
-                "provider": record.get("provider") or DEFAULT_PROVIDER,
-                "last_used": record.get("last_used"),
-                "created_at": record.get("created_at"),
-            }
-        )
-    items.sort(key=lambda item: item.get("created_at") or item.get("last_used") or "", reverse=True)
-    return items
-
-
-def _build_sessions_snapshot():
+def _migrate_history_session_id(session_name, old_id, new_id):
+    if not session_name or not old_id or not new_id or old_id == new_id:
+        return
+    # Get workdir from session record
+    workdir = None
     with _SESSION_LOCK:
         sessions = _load_sessions()
-        status = _sessions_with_status(sessions)
-    return {"sessions": sessions, "status": status}
-
-
-def _touch_session(name, when=None):
-    if not name:
+        record = sessions.get(session_name) or {}
+        workdir = record.get("workdir")
+    data = _load_history(workdir)
+    old_entry = data.get(old_id)
+    if not old_entry:
         return
-    now = when or datetime.datetime.now().isoformat(timespec="seconds")
-    with _SESSION_LOCK:
-        data = _load_sessions()
-        record = data.get(name) or {"session_id": None, "session_ids": {}, "provider": DEFAULT_PROVIDER}
-        record["last_used"] = now
-        if not record.get("created_at"):
-            record["created_at"] = now
-        data[name] = record
-        _save_sessions(data)
-    _broadcast_sessions_snapshot()
+    new_entry = data.get(new_id) or {"session_id": new_id, "messages": [], "tool_outputs": []}
+    new_entry["messages"].extend(old_entry.get("messages") or [])
+    new_entry["tool_outputs"].extend(old_entry.get("tool_outputs") or [])
+    new_entry["session_name"] = session_name
+    data[new_id] = new_entry
+    data.pop(old_id, None)
+    _save_history(data, workdir)
 
 
-def _broadcast_sessions_snapshot():
-    payload = _build_sessions_snapshot()
-    dead = []
-    for q in list(_SESSION_SUBSCRIBERS):
-        try:
-            q.put_nowait(payload)
-        except queue.Full:
-            pass
-        except Exception:
-            dead.append(q)
-    for q in dead:
-        _SESSION_SUBSCRIBERS.discard(q)
 
 
 def _build_master_snapshot():
@@ -1769,20 +1251,60 @@ def _build_master_snapshot():
     return {"messages": items}
 
 
-def _broadcast_master_message(session_name, text):
-    if not session_name or not text:
+def _broadcast_master_message(session_name, text_or_payload):
+    """Broadcast message to master console subscribers.
+
+    Args:
+        session_name: Session name for context
+        text_or_payload: Either a string (simple message) or dict (structured payload)
+    """
+    if not session_name:
         return
-    payload = {"type": "message", "session_name": session_name, "text": text}
+
+    # Support both simple text and structured payloads
+    if isinstance(text_or_payload, dict):
+        payload = text_or_payload
+    else:
+        if not text_or_payload:
+            return
+        payload = {"type": "message", "session_name": session_name, "text": text_or_payload}
+
     dead = []
     for q in list(_MASTER_SUBSCRIBERS):
         try:
             q.put_nowait(payload)
         except queue.Full:
             pass
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to broadcast to master subscriber: {e}")
             dead.append(q)
     for q in dead:
         _MASTER_SUBSCRIBERS.discard(q)
+
+
+def _broadcast_session_message(session_name, payload):
+    """Broadcast a message to all viewers of a specific session.
+
+    Args:
+        session_name: The session to broadcast to
+        payload: Dict with message data (type, source, role, text, etc.)
+    """
+    if not session_name or not payload:
+        return
+    viewers = _SESSION_VIEWERS.get(session_name, set())
+    dead = []
+    for q in list(viewers):
+        try:
+            q.put_nowait(payload)
+        except queue.Full:
+            pass
+        except Exception as e:
+            logger.warning(f"Failed to broadcast to session {session_name} viewer: {e}")
+            dead.append(q)
+    for q in dead:
+        viewers.discard(q)
+        if not viewers:
+            _SESSION_VIEWERS.pop(session_name, None)
 
 
 def _resolve_provider(session_name, requested_provider):
@@ -1810,12 +1332,116 @@ def _resolve_provider(session_name, requested_provider):
         return current
 
 
+def _get_claude_history(session_id, workdir):
+    """Read conversation history from Claude Code JSONL session file.
+
+    Args:
+        session_id: Claude session UUID
+        workdir: Working directory where Claude stores session files
+
+    Returns:
+        dict: History with messages and tool_outputs
+    """
+    import os
+    import json
+    import glob
+
+    # Claude stores sessions in ~/.claude/projects/<workdir-safe-name>/<session-id>.jsonl
+    if not workdir:
+        workdir = os.getcwd()
+
+    # Convert workdir to Claude's safe project name format
+    safe_workdir = workdir.replace(":", "-").replace("\\", "-").replace("/", "-")
+    if safe_workdir.startswith("-"):
+        safe_workdir = safe_workdir[1:]
+
+    claude_projects_dir = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+
+    # Use glob to find the file - bypasses Windows file system caching issues
+    # where os.path.exists() and open() fail even when file exists
+    pattern = os.path.join(claude_projects_dir, "*", f"{session_id}.jsonl")
+    matches = glob.glob(pattern)
+
+    if not matches:
+        logger.debug(f"[Claude History] No session file found for {session_id}")
+        return {"messages": [], "tool_outputs": []}
+
+    session_file = matches[0]
+    messages = []
+    tool_outputs = []
+
+    try:
+        with open(session_file, 'r', encoding='utf-8') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    entry_type = entry.get("type")
+
+                    # User messages
+                    if entry_type == "user":
+                        msg = entry.get("message", {})
+                        content = msg.get("content", "")
+
+                        # Handle both string content and array of content blocks
+                        if isinstance(content, list):
+                            texts = []
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    texts.append(block.get("text", ""))
+                            if texts:
+                                messages.append({"role": "user", "text": "\n".join(texts)})
+                        elif content:
+                            messages.append({"role": "user", "text": content})
+
+                    # Assistant messages
+                    elif entry_type == "assistant":
+                        msg = entry.get("message", {})
+                        content_blocks = msg.get("content", [])
+                        texts = []
+                        for block in content_blocks:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                texts.append(block.get("text", ""))
+                        if texts:
+                            messages.append({"role": "assistant", "text": "\n".join(texts)})
+
+                    # Tool outputs (bash commands, etc.)
+                    elif entry_type == "tool_result":
+                        output = entry.get("content", "")
+                        if output:
+                            tool_outputs.append(output)
+
+                except json.JSONDecodeError as e:
+                    logger.warning(f"[Claude History] Failed to parse line: {e}")
+                    continue
+                except Exception as e:
+                    logger.warning(f"[Claude History] Error processing entry: {e}")
+                    continue
+
+    except FileNotFoundError:
+        logger.debug(f"[Claude History] Session file not found: {session_file}")
+        return {"messages": [], "tool_outputs": []}
+    except OSError as e:
+        logger.error(f"[Claude History] Failed to read session file {session_file}: {e}")
+        return {"messages": [], "tool_outputs": []}
+    except Exception as e:
+        logger.error(f"[Claude History] Unexpected error reading Claude history: {e}", exc_info=True)
+        return {"messages": [], "tool_outputs": []}
+
+    logger.debug(f"[Claude History] Loaded {len(messages)} messages, {len(tool_outputs)} tool outputs from {session_file}")
+    return {
+        "messages": messages,
+        "tool_outputs": tool_outputs,
+    }
+
+
 def _get_history_for_name(name):
     """Get conversation history for a named session.
-    
+
     Args:
         name: Session name
-        
+
     Returns:
         dict: History with messages and tool_outputs
     """
@@ -1830,6 +1456,12 @@ def _get_history_for_name(name):
         workdir = record.get("workdir")  # Get workdir from session
         if not session_id:
             return {"messages": [], "tool_outputs": []}
+
+        # Claude sessions are stored in JSONL files, not history.json
+        if provider == "claude":
+            return _get_claude_history(session_id, workdir)
+
+        # Other providers (codex, copilot, gemini) use history.json
         history = _load_history(workdir).get(session_id) or {}
         return {
             "messages": history.get("messages") or [],
@@ -1885,687 +1517,6 @@ def _build_synthetic_events(text):
     if not text:
         return []
     return [{"type": "item.completed", "item": {"type": "agent_message", "text": text}}]
-
-def _is_copilot_footer_line(line):
-    if not line:
-        return False
-    stripped = line.strip()
-    return (
-        stripped.startswith("Total usage est:")
-        or stripped.startswith("API time spent:")
-        or stripped.startswith("Total session time:")
-        or stripped.startswith("Total code changes:")
-        or stripped.startswith("Breakdown by AI model:")
-    )
-
-
-def _strip_copilot_footer(text):
-    if not text:
-        return text
-    lines = text.splitlines()
-    start_idx = None
-    for i, line in enumerate(lines):
-        if line.strip().startswith("Total usage est:"):
-            start_idx = i
-            break
-    if start_idx is None:
-        return text
-    tail = lines[start_idx:]
-    if any(_is_copilot_footer_line(line) for line in tail):
-        lines = lines[:start_idx]
-    return "\n".join(lines).rstrip()
-
-
-def _run_copilot_exec(prompt, cwd, config, extra_args=None, timeout_sec=300, resume_session_id=None, resume_last=False, context_briefing=None):
-    logger.debug(f"[Context] _run_copilot_exec called with context={context_briefing is not None}, resume={resume_session_id}, last={resume_last}")
-    # Inject context briefing if provided and not resuming
-    if context_briefing and not resume_session_id and not resume_last:
-        logger.info(f"[Context] Injecting {len(context_briefing)} chars of context into copilot prompt")
-        prompt = f"""# Session Context
-
-Previous conversation history from other providers:
-
-{context_briefing}
-
----
-
-# Current Request
-
-{prompt}"""
-    else:
-        logger.debug(f"[Context] Skipping injection: context={context_briefing is not None}, resume={resume_session_id}, last={resume_last}")
-    
-    copilot_path = _resolve_copilot_path(config)
-    if not copilot_path:
-        raise FileNotFoundError("copilot CLI not found")
-    
-    args = [copilot_path]
-
-    # Add resume flag if resuming a session
-    if resume_session_id and _is_uuid(resume_session_id):
-        args.extend(["--resume", resume_session_id])
-    elif resume_last:
-        args.append("--continue")
-
-    # Add permission flags based on config
-    copilot_permissions = (config.get("copilot_permissions") or "").strip()
-    if copilot_permissions:
-        args.append(f"--{copilot_permissions}")
-    else:
-        args.append("--allow-all-paths")
-
-    # Add model flag if configured
-    copilot_model = (config.get("copilot_model") or "").strip()
-    if copilot_model:
-        args.extend(["--model", copilot_model])
-
-    # Use stdin for multi-line prompt support (non-interactive)
-
-    mcp_data = _load_mcp_json(config)
-    if mcp_data and (config.get("copilot_enable_mcp") is True):
-        mcp_path = _write_mcp_json_file(mcp_data)
-        args.extend(["--additional-mcp-config", f"@{mcp_path}"])
-    if extra_args:
-        args.extend(extra_args)
-    env = os.environ.copy()
-    token = (config.get("copilot_token") or "").strip()
-    token_env = (config.get("copilot_token_env") or "GH_TOKEN").strip() or "GH_TOKEN"
-    if token:
-        env[token_env] = token
-
-    proc = subprocess.Popen(
-        args,
-        cwd=cwd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        env=env,
-    )
-
-    try:
-        stdout, stderr = proc.communicate(input=prompt + '\n', timeout=timeout_sec)
-        returncode = proc.returncode
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        returncode = -1
-
-    # Return mock subprocess.CompletedProcess-like object for API compatibility
-    class ProcResult:
-        def __init__(self, returncode, stdout, stderr):
-            self.returncode = returncode
-            self.stdout = stdout
-            self.stderr = stderr
-
-    return ProcResult(returncode, stdout, stderr), args
-
-
-def _run_gemini_exec(prompt, history_messages, config, timeout_sec=300, cwd=None, resume_session_id=None, resume_last=False, context_briefing=None):
-    # Inject context briefing if provided and not resuming
-    if context_briefing and not resume_session_id and not resume_last:
-        logger.info(f"[Context] Injecting {len(context_briefing)} chars of context into gemini prompt")
-        prompt = f"""# Session Context
-
-Previous conversation history from other providers:
-
-{context_briefing}
-
----
-
-# Current Request
-
-{prompt}"""
-    
-    gemini_path = _resolve_gemini_path(config)
-    if not gemini_path:
-        raise FileNotFoundError("gemini CLI not found")
-
-    _ensure_gemini_policy()
-    
-    args = [gemini_path]
-    
-    # Add resume flag only when explicitly resuming last (Gemini manages its own session IDs)
-    if resume_last:
-        args.extend(["--resume", "latest"])
-    
-    # Use stdin for multi-line prompt support (NOT command-line arg)
-    env = os.environ.copy()
-    if _gca_available():
-        env["GOOGLE_GENAI_USE_GCA"] = "1"
-        env.pop("GEMINI_API_KEY", None)
-    else:
-        if not env.get("GEMINI_API_KEY"):
-            api_key = _get_gemini_api_key_from_settings(cwd)
-            if api_key:
-                env["GEMINI_API_KEY"] = api_key
-    proc = subprocess.Popen(
-        args,
-        cwd=cwd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        env=env,
-    )
-    try:
-        stdout, stderr = proc.communicate(input=prompt + "\n", timeout=timeout_sec)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        raise RuntimeError("gemini CLI timed out")
-    if proc.returncode != 0:
-        raise RuntimeError(_filter_debug_messages((stderr or stdout or "gemini CLI failed")).strip())
-    return _filter_debug_messages((stdout or "").strip())
-
-
-def _run_gemini_exec_stream(prompt, config, timeout_sec=300, cwd=None, on_output=None, on_error=None):
-    gemini_path = _resolve_gemini_path(config)
-    if not gemini_path:
-        raise FileNotFoundError("gemini CLI not found")
-
-    _ensure_gemini_policy()
-
-    args = [gemini_path]
-    env = os.environ.copy()
-    if not env.get("GEMINI_API_KEY"):
-        api_key = _get_gemini_api_key_from_settings(cwd)
-        if api_key:
-            env["GEMINI_API_KEY"] = api_key
-
-    proc = subprocess.Popen(
-        args,
-        cwd=cwd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        bufsize=1,
-        env=env,
-    )
-    if prompt:
-        proc.stdin.write(prompt + "\n")
-        proc.stdin.flush()
-        proc.stdin.close()
-
-    q = queue.Queue()
-    t_out = threading.Thread(target=_enqueue_output, args=(proc.stdout, q, "stdout"))
-    t_err = threading.Thread(target=_enqueue_output, args=(proc.stderr, q, "stderr"))
-    t_out.daemon = True
-    t_err.daemon = True
-    t_out.start()
-    t_err.start()
-
-    stdout_lines = []
-    stderr_lines = []
-    start = time.monotonic()
-    while True:
-        try:
-            label, line = q.get(timeout=0.25)
-            line_text = line.rstrip("\n")
-            if label == "stdout":
-                if line_text:
-                    stdout_lines.append(line_text)
-                    if on_output:
-                        on_output(line_text)
-            else:
-                if line_text:
-                    stderr_lines.append(line_text)
-                    if on_error:
-                        on_error(line_text)
-        except queue.Empty:
-            if proc.poll() is not None:
-                break
-            if time.monotonic() - start > timeout_sec:
-                proc.kill()
-                raise RuntimeError("gemini CLI timed out")
-
-    proc.wait()
-    if proc.returncode != 0:
-        combined = "\n".join(stderr_lines) or "\n".join(stdout_lines) or "gemini CLI failed"
-        raise RuntimeError(_filter_debug_messages(combined).strip())
-
-    output = _filter_debug_messages("\n".join(stdout_lines).strip())
-    return output
-
-
-def _ensure_gemini_policy():
-    """Ensure Gemini CLI policy allows delegate_to_agent in non-interactive mode."""
-    try:
-        policy_dir = pathlib.Path.home() / ".gemini" / "policies"
-        policy_dir.mkdir(parents=True, exist_ok=True)
-        policy_path = policy_dir / "bil-dir.toml"
-        policy_path.write_text(
-            """[[rule]]
-toolName = "delegate_to_agent"
-decision = "allow"
-priority = 100
-
-[[rule]]
-toolName = "brave-search"
-decision = "allow"
-priority = 90
-
-[[rule]]
-toolName = "brave_web_search"
-decision = "allow"
-priority = 90
-
-[[rule]]
-toolName = "brave_local_search"
-decision = "allow"
-priority = 90
-""",
-            encoding="utf-8",
-        )
-    except Exception:
-        # Best effort: do not block Gemini if policy can't be written
-        return
-
-
-def _gca_available():
-    """Detect Google Cloud Application Default Credentials (OAuth)."""
-    # If explicitly set in env, assume available.
-    if os.environ.get("GOOGLE_GENAI_USE_GCA"):
-        return True
-    # Gemini CLI OAuth files (local)
-    home = pathlib.Path.home()
-    gemini_oauth = home / ".gemini" / "oauth_creds.json"
-    gemini_accounts = home / ".gemini" / "google_accounts.json"
-    if gemini_oauth.exists() or gemini_accounts.exists():
-        return True
-    # Windows default ADC path
-    appdata = os.environ.get("APPDATA", "")
-    if appdata:
-        adc = pathlib.Path(appdata) / "gcloud" / "application_default_credentials.json"
-        if adc.exists():
-            return True
-    # Linux/macOS default ADC path
-    home = pathlib.Path.home()
-    adc_unix = home / ".config" / "gcloud" / "application_default_credentials.json"
-    return adc_unix.exists()
-
-
-def _get_gemini_api_key_from_settings(cwd=None):
-    def _read_settings(path):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return ""
-        if not isinstance(data, dict):
-            return ""
-        auth = data.get("auth")
-        if isinstance(auth, dict):
-            key = (auth.get("api_key") or "").strip()
-            if key:
-                return key
-        key = (data.get("api_key") or "").strip()
-        if key:
-            return key
-        return ""
-
-    # Prefer project-level settings in cwd/.gemini/settings.json
-    if cwd:
-        candidate = pathlib.Path(cwd) / ".gemini" / "settings.json"
-        if candidate.exists():
-            key = _read_settings(candidate)
-            if key:
-                return key
-    # Fall back to user-level ~/.gemini/settings.json
-    home_settings = pathlib.Path.home() / ".gemini" / "settings.json"
-    if home_settings.exists():
-        return _read_settings(home_settings)
-    return ""
-
-
-def _get_latest_claude_session_id(cwd=None, min_mtime=None, exact_only=False):
-    """Get the most recent Claude session ID for a working directory.
-
-    Args:
-        cwd: Working directory path (optional)
-        min_mtime: Only consider sessions with mtime >= this timestamp (optional)
-        exact_only: If True, only consider the exact encoded workdir path (no fuzzy/global fallback)
-
-    Returns:
-        str: Session UUID or None if not found
-    """
-    import tempfile
-    import os
-    import re
-    import pathlib
-
-    def normalize_for_match(s):
-        """Normalize a path component for fuzzy matching.
-        Claude normalizes paths by replacing spaces and underscores with hyphens.
-        """
-        return s.lower().replace(" ", "-").replace("_", "-")
-
-    # Get Claude's temp directory
-    temp_dir = tempfile.gettempdir()
-    claude_temp = os.path.join(temp_dir, "claude")
-
-    claude_temp_exists = os.path.exists(claude_temp)
-
-    uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-    sessions = []
-
-    if cwd and claude_temp_exists:
-        cwd_encoded = normalize_for_match(cwd.replace(":", "-").replace("\\", "-").replace("/", "-"))
-        search_dir = os.path.join(claude_temp, cwd_encoded)
-
-        # Try exact match first
-        if os.path.exists(search_dir) and os.path.isdir(search_dir):
-            items = os.listdir(search_dir)
-            for dirname in items:
-                path = os.path.join(search_dir, dirname)
-                if os.path.isdir(path) and uuid_pattern.match(dirname):
-                    mtime = os.path.getmtime(path)
-                    if min_mtime is not None and mtime < min_mtime:
-                        continue
-                    sessions.append((dirname, mtime))
-        elif not exact_only:
-            # If exact match fails, look for similar paths
-            # Claude normalizes paths by replacing spaces and underscores with hyphens
-            # Normalize the search term and compare
-            dir_basename_normalized = normalize_for_match(os.path.basename(cwd))
-            for workdir_name in os.listdir(claude_temp):
-                workdir_normalized = normalize_for_match(workdir_name)
-                if dir_basename_normalized in workdir_normalized:
-                    workdir_path = os.path.join(claude_temp, workdir_name)
-                    if not os.path.isdir(workdir_path):
-                        continue
-
-                    for dirname in os.listdir(workdir_path):
-                        path = os.path.join(workdir_path, dirname)
-                        if os.path.isdir(path) and uuid_pattern.match(dirname):
-                            mtime = os.path.getmtime(path)
-                            if min_mtime is not None and mtime < min_mtime:
-                                continue
-                            sessions.append((dirname, mtime))
-    elif claude_temp_exists and not exact_only:
-        # Search all subdirectories
-        for workdir_name in os.listdir(claude_temp):
-            workdir_path = os.path.join(claude_temp, workdir_name)
-            if not os.path.isdir(workdir_path):
-                continue
-
-            for dirname in os.listdir(workdir_path):
-                path = os.path.join(workdir_path, dirname)
-                if os.path.isdir(path) and uuid_pattern.match(dirname):
-                    mtime = os.path.getmtime(path)
-                    if min_mtime is not None and mtime < min_mtime:
-                        continue
-                    sessions.append((dirname, mtime))
-
-    if not sessions:
-        # Fallback to Claude projects directory (~/.claude/projects)
-        project_roots = []
-        home_path = pathlib.Path.home()
-        project_roots.append(home_path / ".claude" / "projects")
-        user_profile = os.environ.get("USERPROFILE")
-        if user_profile:
-            project_roots.append(pathlib.Path(user_profile) / ".claude" / "projects")
-        home_env = os.environ.get("HOME")
-        if home_env:
-            project_roots.append(pathlib.Path(home_env) / ".claude" / "projects")
-
-        for projects_root in project_roots:
-            if not projects_root.exists():
-                continue
-
-            def collect_from_project_dir(project_dir):
-                for entry in project_dir.iterdir():
-                    if entry.is_file() and entry.suffix == ".jsonl":
-                        name = entry.stem
-                        if uuid_pattern.match(name):
-                            mtime = entry.stat().st_mtime
-                            if min_mtime is not None and mtime < min_mtime:
-                                continue
-                            sessions.append((name, mtime))
-
-            if cwd:
-                project_encoded = normalize_for_match(cwd.replace(":", "-").replace("\\", "-").replace("/", "-"))
-                exact_project_dir = projects_root / project_encoded
-                if exact_project_dir.exists() and exact_project_dir.is_dir():
-                    collect_from_project_dir(exact_project_dir)
-                elif not exact_only:
-                    dir_basename_normalized = normalize_for_match(os.path.basename(cwd))
-                    for project_dir in projects_root.iterdir():
-                        if project_dir.is_dir():
-                            project_name_normalized = normalize_for_match(project_dir.name)
-                            if dir_basename_normalized in project_name_normalized:
-                                collect_from_project_dir(project_dir)
-            elif not exact_only:
-                for project_dir in projects_root.iterdir():
-                    if project_dir.is_dir():
-                        collect_from_project_dir(project_dir)
-            if sessions:
-                break
-
-    if not sessions and cwd and claude_temp_exists and not exact_only:
-        # Fallback to searching all temp subdirectories if cwd-specific search fails
-        for workdir_name in os.listdir(claude_temp):
-            workdir_path = os.path.join(claude_temp, workdir_name)
-            if not os.path.isdir(workdir_path):
-                continue
-
-            for dirname in os.listdir(workdir_path):
-                path = os.path.join(workdir_path, dirname)
-                if os.path.isdir(path) and uuid_pattern.match(dirname):
-                    mtime = os.path.getmtime(path)
-                    if min_mtime is not None and mtime < min_mtime:
-                        continue
-                    sessions.append((dirname, mtime))
-
-    if not sessions:
-        return None
-
-    sessions.sort(key=lambda x: x[1], reverse=True)
-    return sessions[0][0]
-
-
-def _wait_for_claude_session_id(cwd, timeout_sec=2.0, interval_sec=0.1, min_mtime=None, exact_only=False):
-    deadline = time.monotonic() + timeout_sec
-    last_seen = None
-    while time.monotonic() < deadline:
-        last_seen = _get_latest_claude_session_id(cwd, min_mtime=min_mtime, exact_only=exact_only)
-        if last_seen:
-            return last_seen
-        time.sleep(interval_sec)
-    return last_seen
-
-
-def _is_uuid(value):
-    if not value or not isinstance(value, str):
-        return False
-    import re
-    uuid_pattern = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-    return bool(uuid_pattern.match(value))
-
-
-    
-
-
-def _run_claude_exec(prompt, config, timeout_sec=300, cwd=None, resume_session_id=None, resume_last=False, context_briefing=None, session_id=None):
-    # Inject context briefing if provided and not resuming
-    if context_briefing and not resume_session_id and not resume_last:
-        logger.info(f"[Context] Injecting {len(context_briefing)} chars of context into claude prompt")
-        prompt = f"""# Session Context
-
-Previous conversation history from other providers:
-
-{context_briefing}
-
----
-
-# Current Request
-
-{prompt}"""
-    
-    claude_path = _resolve_claude_path(config)
-    if not claude_path:
-        raise FileNotFoundError("claude CLI not found")
-    
-    args = [claude_path]
-    args.append("--dangerously-skip-permissions")
-    
-    # Add resume flags only for real Claude UUIDs
-    if _is_uuid(resume_session_id):
-        args.extend(["--resume", resume_session_id])
-    elif resume_last:
-        args.append("--continue")
-    
-    # Use stdin for multi-line prompt support (NOT command-line arg)
-    proc = subprocess.Popen(
-        args,
-        cwd=cwd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-    )
-    try:
-        stdout, stderr = proc.communicate(input=prompt + "\n", timeout=timeout_sec)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr = proc.communicate()
-        raise RuntimeError("claude CLI timed out")
-    if proc.returncode != 0:
-        raise RuntimeError(_filter_debug_messages((stderr or stdout or "claude CLI failed")).strip())
-
-    # Clean the output to remove tool execution markers for better formatting
-    output = _filter_debug_messages((stdout or "").strip())
-    return _clean_claude_output(output)
-
-
-def _run_claude_exec_stream(prompt, config, timeout_sec=300, cwd=None, on_output=None, on_error=None):
-    claude_path = _resolve_claude_path(config)
-    if not claude_path:
-        raise FileNotFoundError("claude CLI not found")
-
-    args = [claude_path, "--dangerously-skip-permissions"]
-    proc = subprocess.Popen(
-        args,
-        cwd=cwd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        bufsize=1,
-    )
-    if prompt:
-        proc.stdin.write(prompt + "\n")
-        proc.stdin.flush()
-        proc.stdin.close()
-
-    q = queue.Queue()
-    t_out = threading.Thread(target=_enqueue_output, args=(proc.stdout, q, "stdout"))
-    t_err = threading.Thread(target=_enqueue_output, args=(proc.stderr, q, "stderr"))
-    t_out.daemon = True
-    t_err.daemon = True
-    t_out.start()
-    t_err.start()
-
-    stdout_lines = []
-    stderr_lines = []
-    start = time.monotonic()
-    while True:
-        try:
-            label, line = q.get(timeout=0.25)
-            line_text = line.rstrip("\n")
-            if label == "stdout":
-                if line_text:
-                    stdout_lines.append(line_text)
-                    if on_output:
-                        on_output(line_text)
-            else:
-                if line_text:
-                    stderr_lines.append(line_text)
-                    if on_error:
-                        on_error(line_text)
-        except queue.Empty:
-            if proc.poll() is not None:
-                break
-            if time.monotonic() - start > timeout_sec:
-                proc.kill()
-                raise RuntimeError("claude CLI timed out")
-
-    proc.wait()
-    if proc.returncode != 0:
-        combined = "\n".join(stderr_lines) or "\n".join(stdout_lines) or "claude CLI failed"
-        raise RuntimeError(_filter_debug_messages(combined).strip())
-
-    output = _filter_debug_messages("\n".join(stdout_lines).strip())
-    return _clean_claude_output(output)
-
-
-def _clean_claude_output(text):
-    """Clean Claude Code output by removing tool execution markers.
-
-    Claude Code CLI includes tool execution steps like:
-    * List directory .
-    * 699 files found
-
-    This function removes these markers while preserving the actual response content.
-
-    Args:
-        text: Raw Claude CLI output
-
-    Returns:
-        str: Cleaned text with tool markers removed
-    """
-    import re
-
-    lines = text.split("\n")
-    cleaned_lines = []
-
-    for line in lines:
-        # Skip tool execution markers (lines starting with unicode bullet or box-drawing)
-        line_stripped = line.strip()
-        if line_stripped.startswith("\u25cf") or line_stripped.startswith("\u2514"):
-            continue
-
-        # Skip empty lines that follow tool markers
-        if not line_stripped and cleaned_lines and not cleaned_lines[-1].strip():
-            continue
-
-        cleaned_lines.append(line)
-
-    # Join and clean up excessive whitespace
-    result = "\n".join(cleaned_lines)
-
-    # Remove excessive blank lines (more than 2 consecutive)
-    result = re.sub(r"\n{3,}", "\n\n", result)
-
-    return result.strip()
-
-
-def _extract_codex_assistant_output(raw_text):
-    if not raw_text:
-        return raw_text
-    assistant_text = []
-    for line in raw_text.split("\n"):
-        if line.startswith('{"type":'):
-            try:
-                event = json.loads(line)
-                if event.get("type") == "item.completed":
-                    item = event.get("item", {})
-                    if item.get("type") == "agent_message" and item.get("text"):
-                        assistant_text.append(item.get("text", ""))
-                    elif item.get("type") == "message" and item.get("role") == "assistant":
-                        for content in item.get("content", []):
-                            if content.get("type") == "text":
-                                assistant_text.append(content.get("text", ""))
-            except Exception:
-                pass
-    if assistant_text:
-        return "\n".join(assistant_text)
-    return raw_text
 
 
 @APP.get("/health/dashboard")
@@ -2636,7 +1587,8 @@ def health_logs():
     if path.exists():
         try:
             lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
-        except Exception:
+        except OSError as e:
+            logger.warning(f"Cannot read log file: {e}")
             lines = []
         for line in lines[-limit:]:
             timestamp = ""
@@ -2645,7 +1597,8 @@ def health_logs():
                 ts = payload.get("ts") or payload.get("timestamp")
                 if ts is not None:
                     timestamp = datetime.datetime.fromtimestamp(float(ts)).isoformat()
-            except Exception:
+            except (json.JSONDecodeError, ValueError, TypeError, OSError) as e:
+                logger.debug(f"Cannot parse log line timestamp: {e}")
                 timestamp = ""
             entries.append({"timestamp": timestamp, "file": path.name, "message": line})
     return jsonify({"logs": entries})
@@ -2672,15 +1625,15 @@ def health_test_provider(provider):
 def gmail_reauth():
     npx_path = _resolve_npx_path()
     if not npx_path:
-        return jsonify({"ok": False, "error": "npx not found in PATH"}), 500
+        return _error_response("npx not found in PATH", code="NPX_NOT_FOUND", status=500)
     cmd = [npx_path, "-y", "@gongrzhe/server-gmail-autoauth-mcp", "auth"]
     try:
         creds_path = pathlib.Path.home() / ".gmail-mcp" / "credentials.json"
         try:
             if creds_path.exists():
                 creds_path.unlink()
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning(f"Cannot delete old Gmail credentials: {e}")
         if os.name == "nt":
             console_cmd = ["cmd", "/c", "start"] + cmd
             subprocess.Popen(console_cmd, cwd=DEFAULT_CWD)
@@ -2702,7 +1655,8 @@ def gmail_reauth():
                 text=True,
             )
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
+        logger.error(f"Gmail reauth failed: {exc}", exc_info=True)
+        return _error_response(str(exc), code="REAUTH_FAILED", status=500)
     return jsonify({"ok": True})
 
 
@@ -2716,7 +1670,8 @@ def diag():
     ip_hint = ""
     try:
         ip_hint = subprocess.check_output("ipconfig", text=True, encoding="utf-8", errors="ignore")
-    except Exception:
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+        logger.debug(f"Cannot get ipconfig output: {e}")
         ip_hint = ""
     template_path = APP.jinja_loader.searchpath if APP.jinja_loader else []
     template_has_task_menu = False
@@ -2724,7 +1679,8 @@ def diag():
         tmpl_path = os.path.join(APP.root_path, "templates", "chat.html")
         if os.path.exists(tmpl_path):
             template_has_task_menu = "task-menu" in pathlib.Path(tmpl_path).read_text(encoding="utf-8", errors="ignore")
-    except Exception:
+    except OSError as e:
+        logger.debug(f"Cannot read template file for diagnostics: {e}")
         template_has_task_menu = False
     return jsonify(
         {
@@ -2745,7 +1701,8 @@ def diag_ui():
     ipconfig = ""
     try:
         ipconfig = subprocess.check_output("ipconfig", text=True, encoding="utf-8", errors="ignore")
-    except Exception:
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as e:
+        logger.debug(f"Cannot get ipconfig output for diag UI: {e}")
         ipconfig = "Unable to read ipconfig output."
     port = int(os.environ.get("PORT", "6000"))
     return render_template("diag.html", ipconfig=ipconfig, port=port)
@@ -2760,7 +1717,8 @@ def diag_home():
     if exists:
         try:
             sample = sorted([p.name for p in session_state.iterdir() if p.is_dir()])[-5:]
-        except Exception:
+        except (OSError, PermissionError) as e:
+            logger.debug(f"Cannot read Copilot session-state directory: {e}")
             sample = []
     return jsonify({"home": home, "session_state_exists": exists, "sample_dirs": sample})
 
@@ -2797,6 +1755,8 @@ def config_ui():
         gmail_status=_gmail_auth_status(),
         orch_base_prompt=(config.get("orch_base_prompt") or "").strip() or DEFAULT_ORCH_BASE_PROMPT,
         orch_default_prompt=DEFAULT_ORCH_BASE_PROMPT,
+        orch_worker_prompt=(config.get("orch_worker_prompt") or "").strip() or DEFAULT_ORCH_WORKER_PROMPT,
+        orch_worker_default_prompt=DEFAULT_ORCH_WORKER_PROMPT,
     )
 
 
@@ -2819,6 +1779,7 @@ def config_save():
     data["copilot_model"] = (form.get("copilot_model") or "").strip()
     data["mcp_json"] = (form.get("mcp_json") or "").strip()
     data["orch_base_prompt"] = (form.get("orch_base_prompt") or "").strip()
+    data["orch_worker_prompt"] = (form.get("orch_worker_prompt") or "").strip()
     if "copilot_token" in form:
         data["copilot_token"] = (form.get("copilot_token") or "").strip()
     if "copilot_token_env" in form:
@@ -2843,6 +1804,8 @@ def config_save():
         gmail_status=_gmail_auth_status(),
         orch_base_prompt=(data.get("orch_base_prompt") or "").strip() or DEFAULT_ORCH_BASE_PROMPT,
         orch_default_prompt=DEFAULT_ORCH_BASE_PROMPT,
+        orch_worker_prompt=(data.get("orch_worker_prompt") or "").strip() or DEFAULT_ORCH_WORKER_PROMPT,
+        orch_worker_default_prompt=DEFAULT_ORCH_WORKER_PROMPT,
     )
 
 
@@ -2885,6 +1848,12 @@ def home():
     )
 
 
+@APP.get("/usage")
+def usage_page():
+    """Display API usage statistics page"""
+    return render_template("usage.html")
+
+
 @APP.get("/chat")
 def chat_home():
     with _SESSION_LOCK:
@@ -2922,6 +1891,24 @@ def chat_named(name):
     available_providers = _get_available_providers(config)
     default_workdir = (config.get("default_workdir") or "").strip()
     history = _get_history_for_name(name)
+    history_messages = history.get("messages") or []
+    if not any((m.get("role") == "system" and str(m.get("text", "")).startswith("[Orchestrator]")) for m in history_messages):
+        kickoff_prompt = None
+        with _ORCH_LOCK:
+            orchestrators = _load_orchestrators()
+        for orch in orchestrators.values():
+            managed = orch.get("managed_sessions") or []
+            if name not in managed:
+                continue
+            for entry in reversed(orch.get("history") or []):
+                if entry.get("action") == "kickoff" and entry.get("prompt"):
+                    kickoff_prompt = entry.get("prompt")
+                    break
+            if kickoff_prompt:
+                break
+        if kickoff_prompt:
+            history_messages = [{"role": "system", "text": f"[Orchestrator] {kickoff_prompt}"}] + history_messages
+    history = {"messages": history_messages, "tool_outputs": history.get("tool_outputs") or []}
     session_status = _sessions_with_status(sessions)
     session_list = _build_session_list(sessions)
     selected_provider = _get_session_provider_for_name(name)
@@ -3053,7 +2040,7 @@ def get_task(task_id):
         tasks = _load_tasks()
     task = tasks.get(task_id)
     if not task:
-        return jsonify({"error": "not found"}), 404
+        return _error_response("Task not found", code=ERR_TASK_NOT_FOUND, status=404)
 
     updated_task = False
     if task.get("last_output") and not task.get("last_output_raw"):
@@ -3229,17 +2216,17 @@ def exec_codex():
     if session_name:
         name_err = _validate_name(session_name, "session_name")
         if name_err:
-            return jsonify({"error": name_err}), 400
+            return _error_response(name_err, code=ERR_INVALID_INPUT, status=400)
     if requested_provider:
         provider_err = _validate_provider(requested_provider)
         if provider_err:
-            return jsonify({"error": provider_err}), 400
+            return _error_response(provider_err, code=ERR_INVALID_PROVIDER, status=400)
     if not isinstance(prompt, str) or not prompt.strip():
-        return jsonify({"error": "prompt must be a non-empty string"}), 400
+        return _error_response("prompt must be a non-empty string", code=ERR_INVALID_PROMPT, status=400)
     if not isinstance(extra_args, list) or not all(isinstance(x, str) for x in extra_args):
-        return jsonify({"error": "extra_args must be a list of strings"}), 400
+        return _error_response("extra_args must be a list of strings", code=ERR_INVALID_INPUT, status=400)
     if not isinstance(timeout_sec, int) or timeout_sec <= 0 or timeout_sec > 3600:
-        return jsonify({"error": "timeout_sec must be an integer between 1 and 3600"}), 400
+        return _error_response("timeout_sec must be an integer between 1 and 3600", code=ERR_INVALID_TIMEOUT, status=400)
     try:
         cwd = _safe_cwd(body.get("cwd"))
         # Capture current state BEFORE resolving provider (for context detection)
@@ -3399,7 +2386,7 @@ def exec_codex():
                 actual_session_id = _wait_for_claude_session_id(
                     search_dir,
                     timeout_sec=3.0,
-                    min_mtime=claude_start_time,
+                    min_mtime=None,
                     exact_only=True,
                 )
                 if actual_session_id:
@@ -3417,7 +2404,7 @@ def exec_codex():
                 "cmd": [claude_path, "--dangerously-skip-permissions", "<stdin>"],
             }
         else:
-            return jsonify({"error": "unknown provider"}), 400
+            return _error_response("unknown provider", code=ERR_UNKNOWN_PROVIDER, status=400)
         if json_events:
             result["events"] = events
             result["session_id"] = session_id
@@ -3432,42 +2419,16 @@ def exec_codex():
         status = 200 if result.get("returncode", 1) == 0 else 500
         return jsonify(result), status
     except subprocess.TimeoutExpired:
-        return jsonify({"error": "codex exec timed out"}), 504
+        return _error_response("codex exec timed out", code=ERR_TIMEOUT, status=504)
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return _error_response(str(exc), code=ERR_INVALID_INPUT, status=400)
     except RuntimeError as exc:
-        return jsonify({"error": str(exc)}), 409
+        return _error_response(str(exc), code=ERR_CONFLICT, status=409)
     except FileNotFoundError:
-        return jsonify({"error": "CLI not found in PATH"}), 500
+        return _error_response("CLI not found in PATH", code=ERR_CLI_NOT_FOUND, status=500)
     finally:
         if session_name:
             _set_session_status(session_name, "idle")
-
-
-def _filter_debug_messages(text):
-    """Filter out debug messages from CLI output.
-
-    Removes messages like 'Reading prompt from stdin' that are debug output
-    from the stdin implementation, not part of the actual response.
-    """
-    if not text:
-        return text
-    lines = text.split('\n')
-    filtered_lines = [
-        line for line in lines
-        if "reading prompt from stdin" not in line.lower()
-        and "codex_core::rollout::list: state db missing rollout path for thread" not in line
-    ]
-    return '\n'.join(filtered_lines)
-
-
-def _enqueue_output(pipe, q, label):
-    """Enqueue output lines while filtering debug messages."""
-    for line in iter(pipe.readline, ""):
-        # Filter out debug messages from stdin implementation
-        if "reading prompt from stdin" not in line.lower():
-            q.put((label, line))
-    pipe.close()
 
 
 class _Job:
@@ -3527,47 +2488,6 @@ class _Job:
             return list(self.buffer)
 
 
-def _build_codex_args(codex_path, extra_args, json_events, resume_session_id, resume_last, prompt, context_briefing=None):
-    """Build codex command args for interactive sessions with stdin support.
-
-    NOTE: The prompt is NOT appended to args - it will be passed via stdin.
-    This enables multi-line prompt support in interactive sessions.
-    """
-    # Inject context briefing if provided and not resuming
-    if context_briefing and not resume_session_id and not resume_last:
-        logger.info(f"[Context] Injecting {len(context_briefing)} chars of context into codex stream")
-        prompt = f"""# Session Context
-
-Previous conversation history from other providers:
-
-{context_briefing}
-
----
-
-# Current Request
-
-{prompt}"""
-
-    args = [codex_path]
-    sandbox_mode = _get_sandbox_mode(_get_provider_config(), "codex")
-    if sandbox_mode:
-        args.extend(["--sandbox", sandbox_mode])
-    args.append("exec")
-    args.append("--skip-git-repo-check")
-    if extra_args:
-        args.extend(extra_args)
-    if json_events:
-        args.append("--json")
-    if resume_session_id or resume_last:
-        args.append("resume")
-        if resume_session_id:
-            args.append(resume_session_id)
-        else:
-            args.append("--last")
-    # DO NOT append prompt - it will be passed via stdin for multi-line support
-    return args, prompt
-
-
 def _broadcast_agent_message(job, text):
     if not text:
         return
@@ -3600,6 +2520,7 @@ def _start_next_pending(session_name):
     provider = payload.get("provider") or _get_session_provider_for_name(session_name)
     resume_session_id = _get_session_id_for_name(session_name)
     job_key = f"{provider}:{session_name}"
+    start_job = None
     with _JOB_LOCK:
         existing = _JOBS.get(job_key)
         if existing and not existing.done.is_set():
@@ -3620,8 +2541,15 @@ def _start_next_pending(session_name):
             context_briefing=payload.get("context_briefing"),
         )
         _JOBS[job_key] = job
+        start_job = job
+    if start_job:
         _set_session_status(session_name, "running")
-        _start_job(job)
+        # Notify session viewers that status changed to running (show thinking indicator)
+        _broadcast_session_message(session_name, {
+            "type": "status_change",
+            "status": "running"
+        })
+        _start_job(start_job)
 
 
 def _broadcast_error(job, text):
@@ -3635,6 +2563,25 @@ def _broadcast_error(job, text):
             "message": text,
         }
     )
+
+    # Save error to history so it persists across page refreshes
+    if job.session_id and text:
+        _append_history(
+            job.session_id,
+            job.session_name,
+            {"messages": [{"role": "error", "text": f"Error: {text}"}], "tool_outputs": []},
+        )
+
+    # Broadcast to session viewers in real-time
+    if job.session_name and text:
+        _broadcast_session_message(job.session_name, {
+            "type": "message",
+            "source": "system",
+            "role": "error",
+            "text": f"Error: {text}"
+        })
+
+    # Also send via job SSE for direct connections
     job.broadcast(f"event: error\ndata: {text}\n\n")
 
 
@@ -3674,6 +2621,9 @@ def _start_codex_job(job):
             with _JOB_LOCK:
                 _JOBS.pop(job.key, None)
             return
+        if job.resume_session_id and str(job.resume_session_id).startswith("codex-"):
+            # Synthetic IDs are for local tracking only; do not pass to codex resume.
+            job.resume_session_id = None
         # _build_codex_args now returns (args, prompt) for stdin support
         args, prompt = _build_codex_args(
             codex_path,
@@ -3738,8 +2688,10 @@ def _start_codex_job(job):
                             sess = _extract_session_id([evt])
                             if sess:
                                 sent_session = True
+                                old_id = job.session_id
                                 job.session_id = sess
                                 if job.session_name:
+                                    _migrate_history_session_id(job.session_name, old_id, sess)
                                     _set_session_name(job.session_name, sess)
                                 job.broadcast(f"event: session_id\ndata: {sess}\n\n")
                         if evt.get("type") == "item.completed":
@@ -3784,8 +2736,28 @@ def _start_codex_job(job):
             if job.prompt:
                 conversation["messages"].append({"role": "user", "text": job.prompt})
             if assistant_chunks:
-                conversation["messages"].append({"role": "assistant", "text": "\n".join(assistant_chunks).strip()})
+                assistant_text = "\n".join(assistant_chunks).strip()
+                conversation["messages"].append({"role": "assistant", "text": assistant_text})
             _append_history(job.session_id, job.session_name, conversation)
+
+            # Note: Agent responses are already streamed via job SSE (/stream endpoint)
+            # Don't broadcast to session viewers to avoid duplicates
+            # BUT broadcast to master console for live updates (unless orchestrator is managing)
+            if assistant_chunks and job.session_name:
+                # Only broadcast if session doesn't have an orchestrator
+                if not _session_has_orchestrator(job.session_name):
+                    _broadcast_master_message(job.session_name, assistant_text)
+
+                # Notify session viewers that new messages are available
+                _broadcast_session_message(job.session_name, {
+                    "type": "job_complete",
+                    "session": job.session_name,
+                    "has_response": True
+                })
+
+                # Trigger orchestrator check immediately (event-driven)
+                _trigger_orchestrator_check(job.session_name)
+
         job.broadcast(f"event: done\ndata: returncode={rc}\n\n")
         job.done.set()
         _set_session_status(job.session_name, "idle")
@@ -3941,7 +2913,8 @@ Previous conversation history from other providers:
                             continue
                         try:
                             mtime = p.stat().st_mtime
-                        except Exception:
+                        except (OSError, PermissionError) as e:
+                            logger.debug(f"Cannot stat Copilot session dir {p.name}: {e}")
                             continue
                         candidates.append((mtime, p.name))
                     if candidates:
@@ -3982,8 +2955,28 @@ Previous conversation history from other providers:
             if job.prompt:
                 conversation["messages"].append({"role": "user", "text": job.prompt})
             if assistant_chunks:
-                conversation["messages"].append({"role": "assistant", "text": "\n".join(assistant_chunks).strip()})
+                assistant_text = "\n".join(assistant_chunks).strip()
+                conversation["messages"].append({"role": "assistant", "text": assistant_text})
             _append_history(job.session_id, job.session_name, conversation)
+
+            # Note: Agent responses are already streamed via job SSE (/stream endpoint)
+            # Don't broadcast to session viewers to avoid duplicates
+            # BUT broadcast to master console for live updates (unless orchestrator is managing)
+            if assistant_chunks and job.session_name:
+                # Only broadcast if session doesn't have an orchestrator
+                if not _session_has_orchestrator(job.session_name):
+                    _broadcast_master_message(job.session_name, assistant_text)
+
+                # Notify session viewers that new messages are available
+                _broadcast_session_message(job.session_name, {
+                    "type": "job_complete",
+                    "session": job.session_name,
+                    "has_response": True
+                })
+
+                # Trigger orchestrator check immediately (event-driven)
+                _trigger_orchestrator_check(job.session_name)
+
         job.broadcast(f"event: done\ndata: returncode={rc}\n\n")
         job.done.set()
         _set_session_status(job.session_name, "idle")
@@ -4021,14 +3014,20 @@ Previous conversation history from other providers:
             with _JOB_LOCK:
                 _JOBS.pop(job.key, None)
             return
-        if _is_uuid(job.session_id):
+        if not job.session_id and job.session_name:
+            try:
+                job.session_id = _get_session_id_for_name(job.session_name)
+            except Exception as e:
+                logger.warning(f"Cannot get session ID for {job.session_name}: {e}")
+        if job.session_id:
             job.broadcast(f"event: session_id\ndata: {job.session_id}\n\n")
         
         args = [gemini_path]
-        
+
         # Add resume flag if resuming a session (must come before -p)
         # Gemini manages its own session IDs, so we always use 'latest' to continue
-        if job.resume_session_id or job.resume_last:
+        # Only resume if explicitly requested via resume_last flag
+        if job.resume_last:
             args.extend(["--resume", "latest"])
         
         try:
@@ -4090,8 +3089,8 @@ Previous conversation history from other providers:
                     _broadcast_error(job, "gemini exec timed out")
                     break
 
-        proc.wait()
-        job.returncode = 0
+        rc = proc.wait()
+        job.returncode = rc
         _log_event(
             {
                 "type": "job.done",
@@ -4099,7 +3098,7 @@ Previous conversation history from other providers:
                 "session_name": job.session_name,
                 "session_id": job.session_id,
                 "prompt": job.prompt,
-                "returncode": 0,
+                "returncode": rc,
             }
         )
         if job.session_id:
@@ -4107,9 +3106,29 @@ Previous conversation history from other providers:
             if job.prompt:
                 conversation["messages"].append({"role": "user", "text": job.prompt})
             if assistant_chunks:
-                conversation["messages"].append({"role": "assistant", "text": "\n".join(assistant_chunks).strip()})
+                assistant_text = "\n".join(assistant_chunks).strip()
+                conversation["messages"].append({"role": "assistant", "text": assistant_text})
             _append_history(job.session_id, job.session_name, conversation)
-        job.broadcast("event: done\ndata: returncode=0\n\n")
+
+            # Note: Agent responses are already streamed via job SSE (/stream endpoint)
+            # Don't broadcast to session viewers to avoid duplicates
+            # BUT broadcast to master console for live updates (unless orchestrator is managing)
+            if assistant_chunks and job.session_name:
+                # Only broadcast if session doesn't have an orchestrator
+                if not _session_has_orchestrator(job.session_name):
+                    _broadcast_master_message(job.session_name, assistant_text)
+
+                # Notify session viewers that new messages are available
+                _broadcast_session_message(job.session_name, {
+                    "type": "job_complete",
+                    "session": job.session_name,
+                    "has_response": True
+                })
+
+                # Trigger orchestrator check immediately (event-driven)
+                _trigger_orchestrator_check(job.session_name)
+
+        job.broadcast(f"event: done\ndata: returncode={rc}\n\n")
         job.done.set()
         _set_session_status(job.session_name, "idle")
         with _JOB_LOCK:
@@ -4215,6 +3234,8 @@ Previous conversation history from other providers:
         args = [claude_path, "--dangerously-skip-permissions"]
         if _is_uuid(job.resume_session_id):
             args.extend(["--resume", job.resume_session_id])
+        elif _is_uuid(job.session_id):
+            args.extend(["--session-id", job.session_id])
         elif job.resume_last:
             args.append("--continue")
 
@@ -4243,7 +3264,7 @@ Previous conversation history from other providers:
             actual_session_id = _wait_for_claude_session_id(
                 search_dir,
                 timeout_sec=3.0,
-                min_mtime=claude_start_time,
+                min_mtime=None,
                 exact_only=True,
             )
             if actual_session_id:
@@ -4252,7 +3273,8 @@ Previous conversation history from other providers:
                 logger.info(f"Captured Claude session ID for {job.session_name}: {actual_session_id}")
                 job.broadcast(f"event: session_id\ndata: {actual_session_id}\n\n")
 
-        job.returncode = 0
+        rc = 0  # Claude already checked for errors above, so if we reach here, rc is 0
+        job.returncode = rc
         _log_event(
             {
                 "type": "job.done",
@@ -4260,7 +3282,7 @@ Previous conversation history from other providers:
                 "session_name": job.session_name,
                 "session_id": job.session_id,
                 "prompt": job.prompt,
-                "returncode": 0,
+                "returncode": rc,
             }
         )
         if job.session_id:
@@ -4268,9 +3290,29 @@ Previous conversation history from other providers:
             if job.prompt:
                 conversation["messages"].append({"role": "user", "text": job.prompt})
             if assistant_chunks:
-                conversation["messages"].append({"role": "assistant", "text": "\n".join(assistant_chunks).strip()})
+                assistant_text = "\n".join(assistant_chunks).strip()
+                conversation["messages"].append({"role": "assistant", "text": assistant_text})
             _append_history(job.session_id, job.session_name, conversation)
-        job.broadcast("event: done\ndata: returncode=0\n\n")
+
+            # Note: Agent responses are already streamed via job SSE (/stream endpoint)
+            # Don't broadcast to session viewers to avoid duplicates
+            # BUT broadcast to master console for live updates (unless orchestrator is managing)
+            if assistant_chunks and job.session_name:
+                # Only broadcast if session doesn't have an orchestrator
+                if not _session_has_orchestrator(job.session_name):
+                    _broadcast_master_message(job.session_name, assistant_text)
+
+                # Notify session viewers that new messages are available
+                _broadcast_session_message(job.session_name, {
+                    "type": "job_complete",
+                    "session": job.session_name,
+                    "has_response": True
+                })
+
+                # Trigger orchestrator check immediately (event-driven)
+                _trigger_orchestrator_check(job.session_name)
+
+        job.broadcast(f"event: done\ndata: returncode={rc}\n\n")
         job.done.set()
         _set_session_status(job.session_name, "idle")
         with _JOB_LOCK:
@@ -4366,6 +3408,9 @@ def _mark_task_run(task_id, status, output=None, raw_output=None, error=None, ru
                 "error": error,
             }
         )
+        # Limit run_history to prevent unbounded growth (same as orchestrators)
+        if len(run_history) > 200:
+            run_history = run_history[-200:]
         task["run_history"] = run_history
         task["next_run"] = None
         if task.get("enabled"):
@@ -4487,11 +3532,258 @@ def _task_scheduler_loop():
         time.sleep(30)
 
 
-def _orchestrator_loop():
+def _trigger_orchestrator_check(session_name):
+    """Trigger an orchestrator check for a specific session.
+
+    This is called when a job completes to immediately check if orchestrators
+    need to make decisions, instead of waiting for the polling loop.
+
+    Args:
+        session_name: The session that just completed
+    """
+    if not session_name:
+        return
+
+    # Add to trigger queue (non-blocking)
+    try:
+        _ORCH_TRIGGER_QUEUE.put_nowait(session_name)
+    except queue.Full:
+        # Queue full, orchestrator will pick it up in polling loop
+        pass
+
+
+def _process_orchestrator_session(orch_id, orch, session_name, state):
+    """Process a single orchestrator session.
+
+    Extracted from the orchestrator loop to be reusable for event-driven triggers.
+
+    Args:
+        orch_id: Orchestrator ID
+        orch: Orchestrator dict
+        session_name: Session to process
+        state: Orchestrator state dict for this orchestrator
+
+    Returns:
+        Updated state entry for the session
+    """
+    status = _get_session_status(session_name)
+    entry = state.get(session_name) or {"status": None, "handled_idle": False, "last_output_idx": -1}
+    prev = entry.get("status")
+
+    entry["status"] = status
+    if status == "running":
+        entry["handled_idle"] = False
+
+    should_handle = False
+    if prev == "running" and status == "idle":
+        should_handle = True
+    elif prev is None and status == "idle" and not entry.get("handled_idle"):
+        should_handle = True
+
+    if not should_handle:
+        return entry
+
+    print(f"[Orchestrator] Session '{session_name}' needs handling (prev={prev}, status={status})")
+    history = _get_history_for_name(session_name)
+    has_history = bool(history.get("messages"))
+
+    # Kickoff if no history
+    if not has_history and not entry.get("kickoff_sent"):
+        print(f"[Orchestrator] Preparing kickoff for '{session_name}'")
+        kickoff_already = False
+        for h in (orch.get("history") or []):
+            if h.get("action") == "kickoff" and h.get("target_session") == session_name:
+                kickoff_already = True
+                break
+
+        if kickoff_already:
+            entry["kickoff_sent"] = True
+            entry["handled_idle"] = True
+            return entry
+
+        role = _infer_worker_role(orch.get("goal") or "")
+        config = _load_client_config()
+        kickoff_template = _get_orchestrator_worker_prompt(config)
+        session_workdir = _get_session_workdir(session_name)
+        kickoff = _build_worker_kickoff_prompt(
+            orch.get("goal") or "",
+            role,
+            kickoff_template,
+            session_workdir,
+        )
+        _inject_prompt_to_session(session_name, kickoff)
+        now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+        _append_orchestrator_history(
+            orch_id,
+            orch,
+            {
+                "at": now_iso,
+                "action": "kickoff",
+                "target_session": session_name,
+                "prompt": kickoff,
+                "question": "",
+                "raw": "",
+            },
+        )
+        entry["kickoff_sent"] = True
+        entry["handled_idle"] = True
+        entry["last_output"] = None
+        entry["last_output_idx"] = -1
+        return entry
+
+    # Check for new output and make decision
+    latest_idx, latest = _get_latest_assistant_message_with_index(session_name)
+    if latest_idx < 0 or latest_idx == entry.get("last_output_idx") or not latest:
+        print(f"[Orchestrator]   Skipping - no new output")
+        entry["handled_idle"] = True
+        return entry
+
+    print(f"[Orchestrator]   Making decision for new output...")
+    action = _run_orchestrator_decision(orch, session_name, latest)
+    if not action or not isinstance(action, dict):
+        return entry
+
+    now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+    action_type = action.get("action") or ""
+
+    if action_type not in {"continue", "done", "ask_human"}:
+        logger.warning(f"[Orchestrator] Invalid action '{action_type}' from {orch.get('name')} for session '{session_name}', using 'done' instead")
+        action_type = "done"
+        action = {
+            "action": "done",
+            "target_session": session_name,
+            "message": "",
+            "question": "",
+            "raw": action.get("raw") or action.get("_raw") or "",
+        }
+
+    # Handle actions (ask_human, continue, done)
+    if action_type == "ask_human":
+        question = action.get("question") or ""
+        if question:
+            if "target_session" not in action:
+                action["target_session"] = session_name
+
+            # Store pending question and wait for human response
+            # Do NOT inject into session - that causes infinite loops
+            with _ORCH_LOCK:
+                data = _load_orchestrators()
+                current = data.get(orch_id) or orch
+                current["pending_question"] = {
+                    "question": question,
+                    "target_session": session_name,
+                    "asked_at": now_iso
+                }
+                data[orch_id] = current
+                _save_orchestrators(data)
+
+            # Broadcast to master console for visibility
+            _broadcast_master_message(session_name, {
+                "type": "orchestrator_question",
+                "session_name": session_name,
+                "orchestrator_id": orch_id,
+                "question": question
+            })
+    elif action_type == "continue":
+        managed = orch.get("managed_sessions") or []
+        message = action.get("message")
+        if session_name in managed and message:
+            _inject_prompt_to_session(session_name, message)
+            # Broadcast using session name, not orchestrator name, so user knows which session
+            _broadcast_master_message(session_name, message)
+    elif action_type == "done":
+        goal = orch.get("goal") or ""
+        completion_msg = f"[Orchestrator] {orch.get('name', 'Orchestrator')} completed work on '{session_name}'"
+        completion_msg += f"\n\nGoal: {goal}"
+        _broadcast_master_message(session_name, {
+            "type": "orchestrator_completion",
+            "session_name": session_name,
+            "orchestrator_id": orch_id,
+            "goal": goal
+        })
+
+    _append_orchestrator_history(orch_id, orch, action)
+    entry["last_output_idx"] = latest_idx
+    entry["last_output"] = latest
+    entry["handled_idle"] = True
+
+    with _ORCH_LOCK:
+        data = _load_orchestrators()
+        current = data.get(orch_id) or orch
+        current["last_action"] = action_type
+        current["last_decision_at"] = now_iso
+        current["last_question"] = action.get("question") if action_type == "ask_human" else ""
+        data[orch_id] = current
+        _save_orchestrators(data)
+
+    return entry
+
+
+def _orchestrator_event_processor():
+    """Process orchestrator triggers from the event queue.
+
+    This runs in a background thread and processes session completion events
+    immediately instead of waiting for the polling loop.
+    """
+    logger.info("[Orchestrator] Event processor starting...")
     while True:
         try:
+            # Block until a trigger arrives
+            session_name = _ORCH_TRIGGER_QUEUE.get(timeout=5)
+
+            # Check if already processing this session
+            with _ORCH_PROCESSING_LOCK:
+                if session_name in _ORCH_PROCESSING:
+                    continue  # Skip, already being processed
+                _ORCH_PROCESSING[session_name] = True
+
+            try:
+                # Find orchestrators managing this session
+                with _ORCH_LOCK:
+                    orchestrators = _load_orchestrators()
+
+                for orch_id, orch in orchestrators.items():
+                    if not orch.get("enabled"):
+                        continue
+                    managed = orch.get("managed_sessions") or []
+                    if session_name not in managed:
+                        continue
+
+                    print(f"[Orchestrator Event] Processing '{session_name}' for {orch.get('name', 'Unknown')}")
+                    state = _ORCH_STATE.setdefault(orch_id, {})
+                    entry = _process_orchestrator_session(orch_id, orch, session_name, state)
+                    state[session_name] = entry
+
+            finally:
+                with _ORCH_PROCESSING_LOCK:
+                    _ORCH_PROCESSING.pop(session_name, None)
+
+        except queue.Empty:
+            # No triggers in queue, continue waiting
+            continue
+        except Exception as exc:
+            logger.error(f"[Orchestrator Event] Error processing trigger: {exc}")
+            import traceback
+            traceback.print_exc()
+
+
+def _orchestrator_loop():
+    """Polling loop for orchestrators (runs slowly as failsafe).
+
+    Most orchestrator checks are now event-driven (triggered on job completion),
+    but this loop runs every 30 seconds as a failsafe to catch any missed events.
+    """
+    logger.info("[Orchestrator] Polling loop starting (30s interval, event-driven primary)...")
+    print("[Orchestrator] Polling loop starting (30s interval, event-driven primary)...")
+    iteration = 0
+    while True:
+        try:
+            iteration += 1
             with _ORCH_LOCK:
                 orchestrators = _load_orchestrators()
+            enabled_count = sum(1 for o in orchestrators.values() if o.get("enabled"))
+            if orchestrators and iteration % 10 == 1:  # Log less frequently
+                logger.info(f"[Orchestrator Poll] Checking {len(orchestrators)} orchestrator(s), {enabled_count} enabled...")
             for orch_id, orch in orchestrators.items():
                 if not orch.get("enabled"):
                     continue
@@ -4500,105 +3792,50 @@ def _orchestrator_loop():
                     continue
                 state = _ORCH_STATE.setdefault(orch_id, {})
                 for name in managed:
-                    status = _get_session_status(name)
-                    entry = state.get(name) or {"status": None, "handled_idle": False}
-                    prev = entry.get("status")
-                    entry["status"] = status
-                    if status == "running":
-                        entry["handled_idle"] = False
+                    # Use the extracted processing function
+                    entry = _process_orchestrator_session(orch_id, orch, name, state)
                     state[name] = entry
-                    should_handle = False
-                    if prev == "running" and status == "idle":
-                        should_handle = True
-                    elif prev is None and status == "idle" and not entry.get("handled_idle"):
-                        should_handle = True
-                    if should_handle:
-                        history = _get_history_for_name(name)
-                        has_history = bool(history.get("messages"))
-                        if not has_history and not entry.get("kickoff_sent"):
-                            role = _infer_worker_role(orch.get("goal") or "")
-                            kickoff = _build_worker_kickoff_prompt(orch.get("goal") or "", role)
-                            _inject_prompt_to_session(name, kickoff)
-                            now_iso = datetime.datetime.now().isoformat(timespec="seconds")
-                            _append_orchestrator_history(
-                                orch_id,
-                                orch,
-                                {
-                                    "at": now_iso,
-                                    "action": "kickoff",
-                                    "target_session": name,
-                                    "prompt": kickoff,
-                                    "question": "",
-                                    "raw": "",
-                                },
-                            )
-                            entry["kickoff_sent"] = True
-                            entry["handled_idle"] = True
-                            state[name] = entry
-                            continue
-                        latest = _get_latest_assistant_message(name)
-                        action = _run_orchestrator_decision(orch, name, latest)
-                        if not action or not isinstance(action, dict):
-                            continue
-                        now_iso = datetime.datetime.now().isoformat(timespec="seconds")
-                        action_type = action.get("action") or ""
-                        if action_type not in {"inject_prompt", "wait", "ask_human"}:
-                            fallback_prompt = (
-                                f"Based on the latest output, propose the next concrete steps to progress this goal:\n{orch.get('goal') or ''}"
-                            ).strip()
-                            action_type = "inject_prompt"
-                            action = {
-                                "action": "inject_prompt",
-                                "target_session": name,
-                                "prompt": fallback_prompt,
-                                "question": "",
-                                "raw": action.get("raw") or action.get("_raw") or "",
-                            }
-                        if action_type == "ask_human":
-                            question = action.get("question") or ""
-                            lower_q = question.lower()
-                            fallback_prompt = (
-                                f"Based on the latest output, propose the next concrete steps to progress this goal:\n{orch.get('goal') or ''}"
-                            ).strip()
-                            use_prompt = question
-                            if "orchestrator" in lower_q or "which" in lower_q and "orch" in lower_q:
-                                use_prompt = fallback_prompt
-                            action_type = "inject_prompt"
-                            action = {
-                                "action": "inject_prompt",
-                                "target_session": name,
-                                "prompt": use_prompt,
-                                "question": question,
-                            }
-                        if action_type == "inject_prompt":
-                            target = action.get("target_session")
-                            prompt = action.get("prompt")
-                            if target in managed and prompt:
-                                _inject_prompt_to_session(target, prompt)
-                                orch_name = (orch.get("name") or "").strip()
-                                if orch_name:
-                                    _broadcast_master_message(orch_name, prompt)
-                        history_entry = {
-                            "at": now_iso,
-                            "action": action_type,
-                            "target_session": action.get("target_session") or name,
-                            "prompt": action.get("prompt") or "",
-                            "question": action.get("question") or "",
-                            "raw": action.get("raw") or action.get("_raw") or "",
-                        }
-                        _append_orchestrator_history(orch_id, orch, history_entry)
-                        entry["handled_idle"] = True
-                        with _ORCH_LOCK:
-                            data = _load_orchestrators()
-                            current = data.get(orch_id) or orch
-                            current["last_action"] = action_type
-                            current["last_decision_at"] = now_iso
-                            current["last_question"] = action.get("question") if action_type == "ask_human" else ""
-                            data[orch_id] = current
-                            _save_orchestrators(data)
         except Exception as exc:
             logger.error(f"[Orchestrator] loop error: {exc}")
-        time.sleep(3)
+            print(f"[Orchestrator] ERROR: {exc}")
+            import traceback
+            traceback.print_exc()
+        time.sleep(30)  # Slow polling as failsafe (main work is event-driven)
+
+
+_BACKGROUND_THREADS_STARTED = False
+_BACKGROUND_THREADS_LOCK = threading.Lock()
+
+# Event-driven orchestrator triggers
+_ORCH_TRIGGER_QUEUE = queue.Queue()
+_ORCH_PROCESSING = {}  # Track which sessions are currently being processed
+_ORCH_PROCESSING_LOCK = threading.Lock()
+
+
+def _ensure_background_threads_started():
+    global _BACKGROUND_THREADS_STARTED
+    if _BACKGROUND_THREADS_STARTED:
+        return
+    with _BACKGROUND_THREADS_LOCK:
+        if _BACKGROUND_THREADS_STARTED:
+            return
+        logger.info("[Background] Starting task scheduler thread...")
+        print("[Background] Starting task scheduler thread...")
+        threading.Thread(target=_task_scheduler_loop, daemon=True).start()
+        logger.info("[Background] Starting orchestrator event processor...")
+        print("[Background] Starting orchestrator event processor...")
+        threading.Thread(target=_orchestrator_event_processor, daemon=True).start()
+        logger.info("[Background] Starting orchestrator polling loop (30s failsafe)...")
+        print("[Background] Starting orchestrator polling loop (30s failsafe)...")
+        threading.Thread(target=_orchestrator_loop, daemon=True).start()
+        _BACKGROUND_THREADS_STARTED = True
+        logger.info("[Background] All background threads started")
+        print("[Background] All background threads started")
+
+
+@APP.before_request
+def _start_background_threads_once():
+    _ensure_background_threads_started()
 
 
 @APP.post("/stream")
@@ -4626,17 +3863,17 @@ def stream_codex():
     if session_name:
         name_err = _validate_name(session_name, "session_name")
         if name_err:
-            return jsonify({"error": name_err}), 400
+            return _error_response(name_err, code=ERR_INVALID_INPUT, status=400)
     if requested_provider:
         provider_err = _validate_provider(requested_provider)
         if provider_err:
-            return jsonify({"error": provider_err}), 400
+            return _error_response(provider_err, code=ERR_INVALID_PROVIDER, status=400)
     if not attach and (not isinstance(prompt, str) or not prompt.strip()):
-        return jsonify({"error": "prompt must be a non-empty string"}), 400
+        return _error_response("prompt must be a non-empty string", code=ERR_INVALID_PROMPT, status=400)
     if not isinstance(extra_args, list) or not all(isinstance(x, str) for x in extra_args):
-        return jsonify({"error": "extra_args must be a list of strings"}), 400
+        return _error_response("extra_args must be a list of strings", code=ERR_INVALID_INPUT, status=400)
     if not isinstance(timeout_sec, int) or timeout_sec <= 0 or timeout_sec > 3600:
-        return jsonify({"error": "timeout_sec must be an integer between 1 and 3600"}), 400
+        return _error_response("timeout_sec must be an integer between 1 and 3600", code=ERR_INVALID_TIMEOUT, status=400)
 
     job_holder = {"job": None, "error": None}
     ready = threading.Event()
@@ -4645,63 +3882,91 @@ def stream_codex():
         try:
             cwd = _safe_cwd(body.get("cwd"))
             local_resume_last = resume_last
-            # Capture current state BEFORE resolving provider (for context detection)
             current_provider_before = None
             current_session_id_before = None
+            record = {}
             if session_name:
-                current_provider_before = _get_session_provider_for_name(session_name)
-                with _SESSION_LOCK:
-                    data = _load_sessions()
-                    record = data.get(session_name) or {}
-                    session_ids = record.get("session_ids") or {}
-                    # Get session ID for CURRENT provider (before switch)
+                # Avoid locking in the hot path; read sessions directly.
+                data = _load_sessions()
+                record = data.get(session_name) or {}
+                # Use session's workdir if available (critical for Claude session lookup)
+                session_workdir = record.get("workdir")
+                if session_workdir:
+                    cwd = _safe_cwd(session_workdir)
+                current_provider_before = (record.get("provider") or DEFAULT_PROVIDER).lower()
+                session_ids = record.get("session_ids") or {}
+                if isinstance(session_ids, dict):
                     current_session_id_before = session_ids.get(current_provider_before)
             if not resume_session_id and session_name:
-                local_resume_id = _get_session_id_for_name(session_name)
+                session_ids = record.get("session_ids") or {}
+                local_resume_id = session_ids.get((record.get("provider") or DEFAULT_PROVIDER).lower()) or record.get("session_id")
             else:
                 local_resume_id = resume_session_id
-            provider = _resolve_provider(session_name, requested_provider)
+            provider = (requested_provider or (record.get("provider") if session_name else None) or DEFAULT_PROVIDER).lower()
+            if provider not in SUPPORTED_PROVIDERS:
+                raise ValueError("unknown provider")
             if provider == "gemini" and local_resume_id and local_resume_id.startswith("gemini-") and not resume_last:
                 local_resume_id = None
             if session_name:
-                _touch_session(session_name)
+                def _async_set_provider():
+                    try:
+                        _set_session_provider(session_name, provider)
+                    except Exception as e:
+                        logger.error(f"Failed to set provider for session {session_name} to {provider}: {e}", exc_info=True)
+                threading.Thread(target=_async_set_provider, daemon=True).start()
+            if session_name and provider == "gemini":
+                try:
+                    _ensure_session_id(session_name, provider)
+                    record = _load_sessions().get(session_name) or record
+                    if not local_resume_id:
+                        session_ids = record.get("session_ids") or {}
+                        local_resume_id = session_ids.get(provider) or record.get("session_id")
+                except Exception as e:
+                    logger.warning(f"Cannot ensure Gemini session ID for {session_name}: {e}")
+            # Avoid blocking on disk writes in the stream setup path.
+            if session_name:
+                def _async_touch():
+                    try:
+                        _touch_session(session_name)
+                    except Exception as e:
+                        logger.error(f"Failed to touch session {session_name}: {e}", exc_info=True)
+                threading.Thread(target=_async_touch, daemon=True).start()
 
-            # Check if we're switching providers and need to generate context
+            # Check if we're switching providers and need to generate context.
+            # Do this asynchronously so stream setup never blocks on summary generation.
             if session_name and current_provider_before and provider != current_provider_before:
                 with _SESSION_LOCK:
                     data = _load_sessions()
                     record = data.get(session_name) or {}
                     session_ids = record.get("session_ids") or {}
                     new_provider_session_id = session_ids.get(provider)
+                    workdir = record.get("workdir")
                 if not new_provider_session_id and current_session_id_before:
-                    try:
-                        config = _get_provider_config()
-                        workdir = record.get("workdir")
-                        summary = _generate_session_summary(
-                            current_provider_before,
-                            current_session_id_before,
-                            session_name,
-                            config,
-                            workdir,
-                        )
-                        _append_context_briefing(session_name, summary, current_provider_before, provider)
-                    except Exception:
-                        pass
+                    def _async_context_summary():
+                        try:
+                            config = _get_provider_config()
+                            summary = _generate_session_summary(
+                                current_provider_before,
+                                current_session_id_before,
+                                session_name,
+                                config,
+                                workdir,
+                            )
+                            _append_context_briefing(session_name, summary, current_provider_before, provider)
+                        except Exception as e:
+                            logger.error(f"Failed to generate context summary for {session_name}: {e}", exc_info=True)
+                    t = threading.Thread(target=_async_context_summary, daemon=True)
+                    t.start()
 
             # Load context briefing for new provider sessions (when provider just switched)
             context_briefing = None
             if session_name:
-                with _SESSION_LOCK:
-                    data = _load_sessions()
-                    record = data.get(session_name) or {}
-                    session_ids = record.get("session_ids") or {}
-                    provider_has_session = session_ids.get(provider)
+                session_ids = record.get("session_ids") or {}
+                provider_has_session = session_ids.get(provider) if isinstance(session_ids, dict) else None
                 if not provider_has_session:
                     context_briefing = _load_session_context(session_name)
-                # Gemini resume should use --resume latest only when a prior session exists with history.
                 if provider == "gemini" and provider_has_session and not local_resume_last:
                     local_resume_last = _session_has_history(session_name, "gemini")
-
             job_key = f"{provider}:{session_name or local_resume_id or f'anon-{uuid.uuid4().hex}'}"
             job_to_start = None
             set_running = False
@@ -4723,12 +3988,10 @@ def stream_codex():
                         }
                         _enqueue_pending_prompt(session_name, queued_payload)
                         job_holder["error"] = "queued"
-                        ready.set()
                         return
                 else:
                     if not prompt or not isinstance(prompt, str):
                         job_holder["error"] = "prompt must be a non-empty string"
-                        ready.set()
                         return
                     job = _Job(
                         job_key,
@@ -4747,7 +4010,12 @@ def stream_codex():
                     job_to_start = job
                     set_running = bool(session_name)
             if set_running:
-                _set_session_status(session_name, "running")
+                def _async_status():
+                    try:
+                        _set_session_status(session_name, "running")
+                    except Exception as e:
+                        logger.error(f"Failed to set status for session {session_name}: {e}", exc_info=True)
+                threading.Thread(target=_async_status, daemon=True).start()
             if job_to_start:
                 _start_job(job_to_start)
                 job = job_to_start
@@ -4835,6 +4103,40 @@ def stream_sessions():
     return Response(generate(), mimetype="text/event-stream")
 
 
+@APP.get("/sessions/messages/stream")
+def stream_session_messages():
+    """Stream real-time messages for a specific session.
+
+    Query params:
+        session: The session name to subscribe to
+
+    Streams events like:
+        - Orchestrator prompt injections
+        - User messages (future: collaborative editing)
+        - Agent responses (future: real-time streaming)
+        - Tool outputs
+    """
+    session_name = request.args.get("session", "").strip()
+    if not session_name:
+        return jsonify({"error": "session parameter required"}), 400
+
+    def generate():
+        q = queue.Queue(maxsize=100)
+        viewers = _SESSION_VIEWERS.setdefault(session_name, set())
+        viewers.add(q)
+        try:
+            yield "event: open\ndata: {}\n\n"
+            while True:
+                payload = q.get()
+                yield f"data: {json.dumps(payload)}\n\n"
+        finally:
+            viewers.discard(q)
+            if not viewers:
+                _SESSION_VIEWERS.pop(session_name, None)
+
+    return Response(generate(), mimetype="text/event-stream")
+
+
 @APP.get("/master/stream")
 def stream_master():
     def generate():
@@ -4866,13 +4168,14 @@ def list_orchestrators():
 
 @APP.post("/orchestrators")
 def create_orchestrator():
+    _ensure_background_threads_started()
     body, err = _require_json_body()
     if err:
         return err
     name = (body.get("name") or "").strip()
     name_err = _validate_name(name, "name")
     if name_err:
-        return jsonify({"error": name_err}), 400
+        return _error_response(name_err, code=ERR_INVALID_INPUT, status=400)
     provider = (body.get("provider") or DEFAULT_PROVIDER).lower()
     provider_err = _validate_provider(provider, allow_default=True)
     if provider_err:
@@ -4905,6 +4208,12 @@ def create_orchestrator():
         data = _load_orchestrators()
         data[orch_id] = record
         _save_orchestrators(data)
+    if enabled and managed:
+        for name in managed:
+            try:
+                _maybe_orchestrator_kickoff(orch_id, record, name)
+            except Exception as e:
+                logger.error(f"Failed to kickoff orchestrator {orch_id} for session {name}: {e}", exc_info=True)
     return jsonify({"ok": True, "orchestrator": record})
 
 
@@ -4917,13 +4226,13 @@ def update_orchestrator(orch_id):
         data = _load_orchestrators()
         orch = data.get(orch_id)
         if not orch:
-            return jsonify({"error": "not found"}), 404
+            return _error_response("Orchestrator not found", code=ERR_ORCHESTRATOR_NOT_FOUND, status=404)
         if "name" in body:
             new_name = (body.get("name") or "").strip()
             if new_name:
                 name_err = _validate_name(new_name, "name")
                 if name_err:
-                    return jsonify({"error": name_err}), 400
+                    return _error_response(name_err, code=ERR_INVALID_INPUT, status=400)
                 orch["name"] = new_name
         if "provider" in body:
             provider = (body.get("provider") or "").strip().lower()
@@ -4931,7 +4240,7 @@ def update_orchestrator(orch_id):
             if not provider_err:
                 orch["provider"] = provider
             else:
-                return jsonify({"error": provider_err}), 400
+                return _error_response(provider_err, code=ERR_INVALID_PROVIDER, status=400)
         if "managed_sessions" in body and isinstance(body.get("managed_sessions"), list):
             orch["managed_sessions"] = body.get("managed_sessions")
         if "goal" in body:
@@ -4945,14 +4254,21 @@ def update_orchestrator(orch_id):
 
 @APP.post("/orchestrators/<orch_id>/start")
 def start_orchestrator(orch_id):
+    _ensure_background_threads_started()
     with _ORCH_LOCK:
         data = _load_orchestrators()
         orch = data.get(orch_id)
         if not orch:
-            return jsonify({"error": "not found"}), 404
+            return _error_response("Orchestrator not found", code=ERR_ORCHESTRATOR_NOT_FOUND, status=404)
         orch["enabled"] = True
         data[orch_id] = orch
         _save_orchestrators(data)
+    managed = orch.get("managed_sessions") or []
+    for name in managed:
+        try:
+            _maybe_orchestrator_kickoff(orch_id, orch, name)
+        except Exception as e:
+            logger.error(f"Failed to kickoff orchestrator {orch_id} for session {name} on start: {e}", exc_info=True)
     return jsonify({"ok": True})
 
 
@@ -4962,7 +4278,7 @@ def pause_orchestrator(orch_id):
         data = _load_orchestrators()
         orch = data.get(orch_id)
         if not orch:
-            return jsonify({"error": "not found"}), 404
+            return _error_response("Orchestrator not found", code=ERR_ORCHESTRATOR_NOT_FOUND, status=404)
         orch["enabled"] = False
         data[orch_id] = orch
         _save_orchestrators(data)
@@ -4974,9 +4290,50 @@ def delete_orchestrator(orch_id):
     with _ORCH_LOCK:
         data = _load_orchestrators()
         if orch_id not in data:
-            return jsonify({"error": "not found"}), 404
+            return _error_response("Orchestrator not found", code=ERR_ORCHESTRATOR_NOT_FOUND, status=404)
         data.pop(orch_id, None)
         _save_orchestrators(data)
+    return jsonify({"ok": True})
+
+
+@APP.post("/orchestrators/<orch_id>/respond")
+def respond_to_orchestrator(orch_id):
+    """User responds to an orchestrator's ask_human question.
+
+    The response is injected to the target session as a user message.
+    """
+    payload = request.get_json() or {}
+    response = (payload.get("response") or "").strip()
+
+    if not response:
+        return _error_response("response required", code=ERR_MISSING_REQUIRED_FIELD, status=400)
+
+    with _ORCH_LOCK:
+        data = _load_orchestrators()
+        orch = data.get(orch_id)
+        if not orch:
+            return _error_response("Orchestrator not found", code=ERR_ORCHESTRATOR_NOT_FOUND, status=404)
+
+        pending = orch.get("pending_question")
+        if not pending:
+            return _error_response("no pending question", code=ERR_INVALID_INPUT, status=400)
+
+        target_session = pending.get("target_session")
+        question = pending.get("question")
+
+        if not target_session:
+            return _error_response("invalid pending question", code=ERR_INVALID_INPUT, status=400)
+
+        # Inject user response to the target session as a user message
+        # The session will see this and respond accordingly
+        # The orchestrator will see the full conversation history on next decision
+        _inject_prompt_to_session(target_session, response)
+
+        # Clear pending question
+        orch.pop("pending_question", None)
+        data[orch_id] = orch
+        _save_orchestrators(data)
+
     return jsonify({"ok": True})
 
 
@@ -5010,15 +4367,15 @@ def create_task():
     workdir = (body.get("workdir") or "").strip()
     name_err = _validate_name(name, "name")
     if name_err:
-        return jsonify({"error": name_err}), 400
+        return _error_response(name_err, code=ERR_INVALID_INPUT, status=400)
     if not prompt:
-        return jsonify({"error": "prompt is required"}), 400
+        return _error_response("prompt is required", code=ERR_INVALID_PROMPT, status=400)
     provider_err = _validate_provider(provider)
     if provider_err:
-        return jsonify({"error": provider_err}), 400
+        return _error_response(provider_err, code=ERR_INVALID_PROVIDER, status=400)
     schedule_err = _validate_schedule(schedule)
     if schedule_err:
-        return jsonify({"error": schedule_err}), 400
+        return _error_response(schedule_err, code=ERR_INVALID_SCHEDULE, status=400)
     task = _normalize_task(
         {
             "id": uuid.uuid4().hex,
@@ -5050,29 +4407,29 @@ def update_task(task_id):
         tasks = _load_tasks()
         task = tasks.get(task_id)
         if not task:
-            return jsonify({"error": "not found"}), 404
+            return _error_response("Task not found", code=ERR_TASK_NOT_FOUND, status=404)
         if "name" in body:
             name = (body.get("name") or "").strip()
             name_err = _validate_name(name, "name")
             if name_err:
-                return jsonify({"error": name_err}), 400
+                return _error_response(name_err, code=ERR_INVALID_INPUT, status=400)
             task["name"] = name
         if "prompt" in body:
             prompt = (body.get("prompt") or "").strip()
             if not prompt:
-                return jsonify({"error": "prompt is required"}), 400
+                return _error_response("prompt is required", code=ERR_INVALID_PROMPT, status=400)
             task["prompt"] = prompt
         if "provider" in body:
             provider = (body.get("provider") or "").strip().lower()
             provider_err = _validate_provider(provider)
             if provider_err:
-                return jsonify({"error": provider_err}), 400
+                return _error_response(provider_err, code=ERR_INVALID_PROVIDER, status=400)
             task["provider"] = provider
         if "schedule" in body:
             schedule = body.get("schedule") if isinstance(body.get("schedule"), dict) else {"type": "manual"}
             schedule_err = _validate_schedule(schedule)
             if schedule_err:
-                return jsonify({"error": schedule_err}), 400
+                return _error_response(schedule_err, code=ERR_INVALID_SCHEDULE, status=400)
             task["schedule"] = schedule
         if "workdir" in body:
             task["workdir"] = (body.get("workdir") or "").strip()
@@ -5097,7 +4454,7 @@ def run_task(task_id):
     with _TASK_LOCK:
         tasks = _load_tasks()
         if task_id not in tasks:
-            return jsonify({"error": "not found"}), 404
+            return _error_response("Task not found", code=ERR_TASK_NOT_FOUND, status=404)
     _run_task_async(task_id, force_run=True)
     return jsonify({"ok": True})
 
@@ -5111,7 +4468,7 @@ def delete_task(task_id):
     if removed:
         _broadcast_tasks_snapshot()
         return jsonify({"deleted": task_id})
-    return jsonify({"error": "not found"}), 404
+    return _error_response("Task not found", code=ERR_TASK_NOT_FOUND, status=404)
 
 
 @APP.get("/tasks/<task_id>/stream")
@@ -5307,6 +4664,101 @@ def delete_session(name):
     return jsonify({"error": "not found"}), 404
 
 
+@APP.get("/api/usage")
+def get_usage_stats():
+    """Get API usage statistics from log.jsonl"""
+    time_range = request.args.get("range", "24h")  # 24h, 7d, 30d, all
+
+    # Calculate time threshold
+    now = time.time()
+    if time_range == "24h":
+        threshold = now - (24 * 3600)
+    elif time_range == "7d":
+        threshold = now - (7 * 24 * 3600)
+    elif time_range == "30d":
+        threshold = now - (30 * 24 * 3600)
+    else:
+        threshold = 0  # all time
+
+    try:
+        stats = {
+            "total_calls": 0,
+            "by_provider": {},
+            "by_session": {},
+            "orchestrator_calls": 0,
+            "user_calls": 0,
+            "timeline": [],  # hourly breakdown
+        }
+
+        log_path = pathlib.Path(LOG_STORE_PATH)
+        if not log_path.exists():
+            return jsonify(stats)
+
+        with log_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                    if entry.get("type") != "job.start":
+                        continue
+
+                    ts = entry.get("ts", 0)
+                    if ts < threshold:
+                        continue
+
+                    provider = entry.get("provider", "unknown")
+                    session_name = entry.get("session_name", "unknown")
+                    prompt = entry.get("prompt", "")
+
+                    # Count total
+                    stats["total_calls"] += 1
+
+                    # Count by provider
+                    stats["by_provider"][provider] = stats["by_provider"].get(provider, 0) + 1
+
+                    # Count by session
+                    stats["by_session"][session_name] = stats["by_session"].get(session_name, 0) + 1
+
+                    # Detect orchestrator vs user calls
+                    is_orchestrator = (
+                        "Project goal:" in prompt or
+                        "Based on the latest output" in prompt or
+                        "Begin the work immediately" in prompt
+                    )
+                    if is_orchestrator:
+                        stats["orchestrator_calls"] += 1
+                    else:
+                        stats["user_calls"] += 1
+
+                    # Add to timeline (hourly buckets)
+                    hour_bucket = int(ts / 3600) * 3600
+                    stats["timeline"].append({"ts": hour_bucket, "provider": provider})
+
+                except (json.JSONDecodeError, KeyError):
+                    continue
+
+        # Aggregate timeline
+        timeline_agg = {}
+        for item in stats["timeline"]:
+            bucket = item["ts"]
+            provider = item["provider"]
+            if bucket not in timeline_agg:
+                timeline_agg[bucket] = {}
+            timeline_agg[bucket][provider] = timeline_agg[bucket].get(provider, 0) + 1
+
+        stats["timeline"] = [
+            {"hour": k, **v} for k, v in sorted(timeline_agg.items())
+        ]
+
+        # Sort sessions by usage
+        stats["by_session"] = dict(sorted(stats["by_session"].items(), key=lambda x: x[1], reverse=True)[:20])
+
+        return jsonify(stats)
+
+    except Exception as exc:
+        logger.error(f"Usage stats error: {exc}")
+        return jsonify({"error": str(exc)}), 500
+
+
 if __name__ == "__main__":
     # Migrate legacy .codex_ files to new names
     _migrate_legacy_files()
@@ -5323,6 +4775,5 @@ if __name__ == "__main__":
             _save_tasks(tasks)
 
     port = int(os.environ.get("PORT", "5025"))
-    threading.Thread(target=_task_scheduler_loop, daemon=True).start()
-    threading.Thread(target=_orchestrator_loop, daemon=True).start()
+    _ensure_background_threads_started()
     APP.run(host="0.0.0.0", port=port, debug=False, threaded=True)

@@ -227,6 +227,25 @@
         background: #ef4444;
         box-shadow: 0 0 8px rgba(239, 68, 68, 0.4);
       }
+      .usage-range-btn {
+        padding: 6px 12px;
+        border-radius: 6px;
+        border: 1px solid var(--border);
+        background: #0b0f16;
+        color: var(--muted);
+        cursor: pointer;
+        font-size: 12px;
+        transition: all 0.2s;
+      }
+      .usage-range-btn:hover {
+        background: #1e293b;
+      }
+      .usage-range-btn.active {
+        background: var(--accent);
+        color: #0b0f16;
+        border-color: var(--accent);
+        font-weight: 600;
+      }
       .status-pill.ok .status-dot {
         background: var(--accent);
         box-shadow: 0 0 8px rgba(110, 231, 183, 0.5);
@@ -257,6 +276,7 @@
             <button type="button" class="tab-btn" data-tab="permissions">Permissions</button>
             <button type="button" class="tab-btn" data-tab="orchestrator">Orchestrator</button>
             <button type="button" class="tab-btn {% if gmail_status and not gmail_status.authenticated %}alert{% endif %}" data-tab="mcp">MCP</button>
+            <button type="button" class="tab-btn" data-tab="usage">Token Usage</button>
           </div>
 
           <div class="tab-panel active" id="tab-general">
@@ -373,6 +393,14 @@
               <button type="button" class="icon-btn" id="orchResetBtn" title="Reset to default">↺</button>
               <div class="muted">Reset to the default manager prompt.</div>
             </div>
+            <h3 style="margin-top:20px;">Worker Kickoff Prompt</h3>
+            <div class="muted">This is the first prompt sent to a managed session when it has no history.</div>
+            <label for="orch_worker_prompt">Kickoff prompt</label>
+            <textarea id="orch_worker_prompt" name="orch_worker_prompt" rows="6" data-default-prompt="{{ orch_worker_default_prompt|e }}">{{ orch_worker_prompt|e }}</textarea>
+            <div class="row" style="margin-top:8px;">
+              <button type="button" class="icon-btn" id="orchWorkerResetBtn" title="Reset to default">↺</button>
+              <div class="muted">Available variables: <code>{goal}</code>, <code>{role}</code>, <code>{workdir}</code></div>
+            </div>
           </div>
 
           <div class="tab-panel" id="tab-mcp">
@@ -402,6 +430,52 @@
             <div class="chip-grid" id="mcpQuickAdd"></div>
             <textarea id="mcp_json" name="mcp_json" rows="8" placeholder='{"servers":{"my-mcp":{"command":"node","args":["server.js"],"env":{"KEY":"VALUE"}}}}'>{{ config.get('mcp_json','') }}</textarea>
             <div class="muted">Saved to .mcp.json and applied to Codex (config.toml) + Copilot (--additional-mcp-config). Gemini does not use MCP.</div>
+          </div>
+
+          <div class="tab-panel" id="tab-usage">
+            <h3>Token Usage</h3>
+            <div class="subtle" style="margin-bottom:16px">Track API calls across all providers</div>
+
+            <div style="display:flex; gap:8px; margin-bottom:16px;">
+              <button type="button" class="usage-range-btn active" data-range="24h">24h</button>
+              <button type="button" class="usage-range-btn" data-range="7d">7d</button>
+              <button type="button" class="usage-range-btn" data-range="30d">30d</button>
+              <button type="button" class="usage-range-btn" data-range="all">All</button>
+            </div>
+
+            <div id="usage-warning" style="display:none; background:#78350f; border:1px solid #92400e; border-radius:8px; padding:12px; margin-bottom:16px;">
+              <div style="color:#fbbf24; font-weight:600; margin-bottom:4px;">⚠️ High Orchestrator Usage</div>
+              <div style="color:#fde68a; font-size:13px;" id="usage-warning-text"></div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin-bottom:16px;">
+              <div style="background:#0b0f16; border:1px solid var(--border); border-radius:8px; padding:12px;">
+                <div class="muted" style="font-size:11px; margin-bottom:4px;">TOTAL CALLS</div>
+                <div style="font-size:28px; font-weight:700;" id="usage-total">-</div>
+              </div>
+              <div style="background:#0b0f16; border:1px solid var(--border); border-radius:8px; padding:12px;">
+                <div class="muted" style="font-size:11px; margin-bottom:4px;">USER CALLS</div>
+                <div style="font-size:28px; font-weight:700;" id="usage-user">-</div>
+              </div>
+              <div style="background:#0b0f16; border:1px solid var(--border); border-radius:8px; padding:12px;">
+                <div class="muted" style="font-size:11px; margin-bottom:4px;">ORCHESTRATOR</div>
+                <div style="font-size:28px; font-weight:700;" id="usage-orch">-</div>
+              </div>
+              <div style="background:#0b0f16; border:1px solid var(--border); border-radius:8px; padding:12px;">
+                <div class="muted" style="font-size:11px; margin-bottom:4px;">ORCH %</div>
+                <div style="font-size:28px; font-weight:700;" id="usage-orch-pct">-</div>
+              </div>
+            </div>
+
+            <div style="background:#0b0f16; border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:12px;">
+              <div style="font-weight:600; margin-bottom:10px;">By Provider</div>
+              <div id="usage-providers"></div>
+            </div>
+
+            <div style="background:#0b0f16; border:1px solid var(--border); border-radius:8px; padding:12px;">
+              <div style="font-weight:600; margin-bottom:10px;">Top Sessions</div>
+              <div id="usage-sessions" style="max-height:300px; overflow-y:auto;"></div>
+            </div>
           </div>
 
           <div class="row" style="margin-top:16px">
@@ -676,6 +750,15 @@
           area.value = defVal;
         });
       }
+      const orchWorkerResetBtn = document.getElementById("orchWorkerResetBtn");
+      if (orchWorkerResetBtn) {
+        orchWorkerResetBtn.addEventListener("click", () => {
+          const area = document.getElementById("orch_worker_prompt");
+          if (!area) return;
+          const defVal = area.getAttribute("data-default-prompt") || "";
+          area.value = defVal;
+        });
+      }
 
       try {
         if (sessionStorage.getItem("refreshProvidersOnLoad")) {
@@ -687,6 +770,84 @@
       } catch (err) {
         refreshProviderStatus();
       }
+
+      // Token Usage Tab
+      let currentUsageRange = '24h';
+
+      async function loadUsageStats() {
+        try {
+          const resp = await fetch(`/api/usage?range=${currentUsageRange}`);
+          const data = await resp.json();
+
+          // Update stats
+          document.getElementById('usage-total').textContent = data.total_calls.toLocaleString();
+          document.getElementById('usage-user').textContent = data.user_calls.toLocaleString();
+          document.getElementById('usage-orch').textContent = data.orchestrator_calls.toLocaleString();
+
+          const pct = data.total_calls > 0 ? ((data.orchestrator_calls / data.total_calls) * 100).toFixed(1) : 0;
+          document.getElementById('usage-orch-pct').textContent = pct + '%';
+
+          // Warning
+          const warning = document.getElementById('usage-warning');
+          const warningText = document.getElementById('usage-warning-text');
+          if (data.orchestrator_calls > 100 || pct > 50) {
+            warningText.textContent = `Orchestrators made ${data.orchestrator_calls} calls (${pct}% of total). This may indicate runaway orchestrators.`;
+            warning.style.display = 'block';
+          } else {
+            warning.style.display = 'none';
+          }
+
+          // Providers
+          const providersDiv = document.getElementById('usage-providers');
+          const maxCalls = Math.max(...Object.values(data.by_provider), 1);
+          providersDiv.innerHTML = Object.entries(data.by_provider)
+            .sort((a, b) => b[1] - a[1])
+            .map(([provider, count]) => {
+              const barPct = (count / maxCalls) * 100;
+              return `
+                <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+                  <div style="width:80px; font-size:12px;">${provider}</div>
+                  <div style="flex:1; height:20px; background:#232a36; border-radius:4px; position:relative; overflow:hidden;">
+                    <div style="height:100%; background:linear-gradient(90deg,#6ee7b7,#93c5fd); width:${barPct}%"></div>
+                    <div style="position:absolute; right:6px; top:50%; transform:translateY(-50%); font-size:11px; font-weight:600;">${count}</div>
+                  </div>
+                </div>
+              `;
+            }).join('');
+
+          // Sessions
+          const sessionsDiv = document.getElementById('usage-sessions');
+          sessionsDiv.innerHTML = Object.entries(data.by_session)
+            .map(([session, count]) => `
+              <div style="display:flex; justify-content:space-between; padding:8px; border-bottom:1px solid var(--border);">
+                <div style="font-size:13px;">${session}</div>
+                <div style="font-size:13px; font-weight:600; color:var(--accent-2);">${count}</div>
+              </div>
+            `).join('');
+
+        } catch (err) {
+          console.error('Failed to load usage stats:', err);
+        }
+      }
+
+      // Range buttons
+      document.querySelectorAll('.usage-range-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.usage-range-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          currentUsageRange = btn.dataset.range;
+          loadUsageStats();
+        });
+      });
+
+      // Load stats when usage tab is opened
+      const originalActivateTab = activateTab;
+      activateTab = function(target) {
+        originalActivateTab(target);
+        if (target === 'usage') {
+          loadUsageStats();
+        }
+      };
     </script>
   </body>
 </html>

@@ -41,9 +41,7 @@ enhancements.md
 
 # Test artifacts
 .playwright-mcp/
-test_*.py
 test_*.png
-*_test.py
 *.png
 
 # Log files (SENSITIVE - may contain IPs)
@@ -105,3 +103,32 @@ POWERSHELL_VERIFICATION.md
 VERIFICATION_COMPLETE.md
 VERIFICATION_REPORT.md
 .github/copilot-instructions.md
+
+# JavaScript test files
+test_*.js
+*_test.js
+check_*.js
+screenshot_*.js
+
+# Backup files
+*.backup
+*_origin_*.py
+
+# Temporary output files
+server_output*.txt
+server_clean.txt
+server_final.txt
+*_conversation.txt
+*_notes_*.txt
+*session_response.txt
+
+# Temporary utility scripts
+db_connection.py
+list_databases.py
+query_skills.py
+
+# Documentation files (generated/temporary)
+GOOGLE_SETUP.MD
+MULTILINE_TESTING.md
+ORCHESTRATOR_BUG_POSTMORTEM.md
+TESTING_GUIDE.md
