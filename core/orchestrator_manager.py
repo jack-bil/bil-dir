@@ -30,7 +30,9 @@ def _normalize_orchestrator(value):
     pending_question = value.get("pending_question")
     if not isinstance(pending_question, dict):
         pending_question = None
-    return {
+
+    # Build normalized dict with required fields
+    normalized = {
         "id": orch_id,
         "name": name,
         "provider": provider,
@@ -44,6 +46,16 @@ def _normalize_orchestrator(value):
         "last_question": last_question,
         "pending_question": pending_question,
     }
+
+    # Include optional custom prompts and rules if present
+    if "base_prompt" in value and value.get("base_prompt"):
+        normalized["base_prompt"] = value.get("base_prompt")
+    if "rules" in value and value.get("rules"):
+        normalized["rules"] = value.get("rules")
+    if "worker_prompt" in value and value.get("worker_prompt"):
+        normalized["worker_prompt"] = value.get("worker_prompt")
+
+    return normalized
 
 
 def _load_orchestrators():

@@ -43,6 +43,11 @@ DEFAULT_ORCH_BASE_PROMPT = (
     "in the most recent conversation history from the assistant, then Use ask_human json format."
 )
 DEFAULT_ORCH_WORKER_PROMPT = "{goal}. Begin implementation immediately."
+DEFAULT_ORCH_RULES = """- If the goal is achieved, return done
+- If you can take another step toward the goal, send a message to continue the work
+- Only ask_human if you truly need their input
+- Review the conversation history to avoid repeating yourself
+- If unsure what to do next, return done"""
 
 
 def _load_client_config():
@@ -83,6 +88,13 @@ def _get_orchestrator_worker_prompt(config):
         return DEFAULT_ORCH_WORKER_PROMPT
     text = (config.get("orch_worker_prompt") or "").strip()
     return text or DEFAULT_ORCH_WORKER_PROMPT
+
+
+def _get_orchestrator_rules(config):
+    if not isinstance(config, dict):
+        return DEFAULT_ORCH_RULES
+    rules = (config.get("orch_rules") or "").strip()
+    return rules or DEFAULT_ORCH_RULES
 
 
 def _full_permissions_enabled(config, provider=None):

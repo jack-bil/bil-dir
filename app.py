@@ -31,9 +31,11 @@ from utils.config import (
     PROVIDER_ORDER,
     DEFAULT_ORCH_BASE_PROMPT,
     DEFAULT_ORCH_WORKER_PROMPT,
+    DEFAULT_ORCH_RULES,
     _get_provider_config,
     _get_orchestrator_base_prompt,
     _get_orchestrator_worker_prompt,
+    _get_orchestrator_rules,
     _full_permissions_enabled,
     _get_sandbox_mode,
     _get_provider_model_info,
@@ -531,7 +533,16 @@ def _run_orchestrator_decision(orch, session_name, latest_output):
     goal = orch.get("goal") or ""
     managed = orch.get("managed_sessions") or []
     config = _get_provider_config()
-    base_prompt = _get_orchestrator_base_prompt(config)
+
+    # Use custom base_prompt if provided, otherwise use config default
+    base_prompt = (orch.get("base_prompt") or "").strip()
+    if not base_prompt:
+        base_prompt = _get_orchestrator_base_prompt(config)
+
+    # Use custom rules if provided, otherwise use config default
+    rules = (orch.get("rules") or "").strip()
+    if not rules:
+        rules = _get_orchestrator_rules(config)
 
     # Build context for ALL managed sessions (not just the current one)
     session_contexts = []
@@ -549,11 +560,7 @@ YOUR JOB:
 {base_prompt}
 
 RULES:
-- If the goal is achieved, return done
-- If you can take another step toward the goal, send a message to continue the work
-- Only ask_human if you truly need their input
-- Review the conversation history to avoid repeating yourself
-- If unsure what to do next, return done
+{rules}
 
 WORKING DIRECTORIES (where the project is stored):
 {session_context_text}
@@ -604,7 +611,12 @@ def _maybe_orchestrator_kickoff(orch_id, orch, session_name):
             return False
     role = _infer_worker_role(orch.get("goal") or "")
     config = _load_client_config()
-    kickoff_template = _get_orchestrator_worker_prompt(config)
+
+    # Use custom worker_prompt if provided, otherwise use config default
+    kickoff_template = (orch.get("worker_prompt") or "").strip()
+    if not kickoff_template:
+        kickoff_template = _get_orchestrator_worker_prompt(config)
+
     session_workdir = _get_session_workdir(session_name)
     kickoff = _build_worker_kickoff_prompt(
         orch.get("goal") or "",
@@ -1806,6 +1818,7 @@ def config_ui():
         orch_default_prompt=DEFAULT_ORCH_BASE_PROMPT,
         orch_worker_prompt=(config.get("orch_worker_prompt") or "").strip() or DEFAULT_ORCH_WORKER_PROMPT,
         orch_worker_default_prompt=DEFAULT_ORCH_WORKER_PROMPT,
+        orch_rules=(config.get("orch_rules") or "").strip() or DEFAULT_ORCH_RULES,
     )
 
 
@@ -1829,6 +1842,7 @@ def config_save():
     data["mcp_json"] = (form.get("mcp_json") or "").strip()
     data["orch_base_prompt"] = (form.get("orch_base_prompt") or "").strip()
     data["orch_worker_prompt"] = (form.get("orch_worker_prompt") or "").strip()
+    data["orch_rules"] = (form.get("orch_rules") or "").strip()
     if "copilot_token" in form:
         data["copilot_token"] = (form.get("copilot_token") or "").strip()
     if "copilot_token_env" in form:
@@ -1855,6 +1869,7 @@ def config_save():
         orch_default_prompt=DEFAULT_ORCH_BASE_PROMPT,
         orch_worker_prompt=(data.get("orch_worker_prompt") or "").strip() or DEFAULT_ORCH_WORKER_PROMPT,
         orch_worker_default_prompt=DEFAULT_ORCH_WORKER_PROMPT,
+        orch_rules=(data.get("orch_rules") or "").strip() or DEFAULT_ORCH_RULES,
     )
 
 
@@ -2160,6 +2175,108 @@ def task_new():
         is_new_task=True,
         gmail_status=gmail_status,
         task_mentions_gmail=False,
+    )
+
+
+@APP.get("/orchestrators/new")
+def orchestrator_new():
+    """Show form to create a new orchestrator."""
+    with _SESSION_LOCK:
+        sessions = _load_sessions()
+    with _ORCH_LOCK:
+        orchestrators = _load_orchestrators()
+    config = _load_client_config()
+    available_providers = _get_available_providers(config)
+    default_workdir = (config.get("default_workdir") or "").strip()
+    session_status = _sessions_with_status(sessions)
+    session_list = _build_session_list(sessions)
+    provider_models = _get_provider_model_info()
+    orch_list = _build_orchestrator_list()
+    gmail_status = _gmail_auth_status()
+
+    # Get default values for optional fields
+    default_base_prompt = _get_orchestrator_base_prompt(config)
+    default_rules = _get_orchestrator_rules(config)
+    default_worker_prompt = _get_orchestrator_worker_prompt(config)
+
+    # Create empty orchestrator for the form
+    empty_orch = {
+        "id": "",
+        "name": "",
+        "provider": DEFAULT_PROVIDER,
+        "goal": "",
+        "managed_sessions": [],
+        "enabled": True,
+        "base_prompt": "",
+        "rules": "",
+        "worker_prompt": "",
+    }
+
+    return render_template(
+        "chat.html",
+        sessions=sessions,
+        session_list=session_list,
+        session_status=session_status,
+        orchestrators=orch_list,
+        default_provider=DEFAULT_PROVIDER,
+        history_messages=[],
+        history_tools=[],
+        default_workdir=default_workdir,
+        provider_models=provider_models,
+        available_providers=available_providers,
+        selected_orchestrator=empty_orch,
+        view_mode="orchestrator_edit",
+        is_new_orchestrator=True,
+        gmail_status=gmail_status,
+        default_base_prompt=default_base_prompt,
+        default_rules=default_rules,
+        default_worker_prompt=default_worker_prompt,
+    )
+
+
+@APP.get("/orchestrators/<orch_id>/edit")
+def orchestrator_edit(orch_id):
+    """Show form to edit an existing orchestrator."""
+    with _SESSION_LOCK:
+        sessions = _load_sessions()
+    with _ORCH_LOCK:
+        orchestrators = _load_orchestrators()
+    orch = orchestrators.get(orch_id)
+    if not orch:
+        return "Orchestrator not found", 404
+    config = _load_client_config()
+    available_providers = _get_available_providers(config)
+    default_workdir = (config.get("default_workdir") or "").strip()
+    session_status = _sessions_with_status(sessions)
+    session_list = _build_session_list(sessions)
+    provider_models = _get_provider_model_info()
+    orch_list = _build_orchestrator_list()
+    gmail_status = _gmail_auth_status()
+
+    # Get default values for optional fields
+    default_base_prompt = _get_orchestrator_base_prompt(config)
+    default_rules = _get_orchestrator_rules(config)
+    default_worker_prompt = _get_orchestrator_worker_prompt(config)
+
+    return render_template(
+        "chat.html",
+        sessions=sessions,
+        session_list=session_list,
+        session_status=session_status,
+        orchestrators=orch_list,
+        default_provider=DEFAULT_PROVIDER,
+        history_messages=[],
+        history_tools=[],
+        default_workdir=default_workdir,
+        provider_models=provider_models,
+        available_providers=available_providers,
+        selected_orchestrator=orch,
+        view_mode="orchestrator_edit",
+        is_new_orchestrator=False,
+        gmail_status=gmail_status,
+        default_base_prompt=default_base_prompt,
+        default_rules=default_rules,
+        default_worker_prompt=default_worker_prompt,
     )
 
 
@@ -3785,8 +3902,13 @@ def _process_orchestrator_session(orch_id, orch, session_name, state):
         Updated state entry for the session
     """
     status = _get_session_status(session_name)
-    entry = state.get(session_name) or {"status": None, "handled_idle": False, "last_output_idx": -1}
+    entry = state.get(session_name) or {"status": None, "handled_idle": False, "last_output_idx": -1, "done": False}
     prev = entry.get("status")
+
+    # Skip if orchestrator already returned "done" for this specific session
+    if entry.get("done"):
+        entry["handled_idle"] = True
+        return entry
 
     entry["status"] = status
     if status == "running":
@@ -3821,7 +3943,12 @@ def _process_orchestrator_session(orch_id, orch, session_name, state):
 
         role = _infer_worker_role(orch.get("goal") or "")
         config = _load_client_config()
-        kickoff_template = _get_orchestrator_worker_prompt(config)
+
+        # Use custom worker_prompt if provided, otherwise use config default
+        kickoff_template = (orch.get("worker_prompt") or "").strip()
+        if not kickoff_template:
+            kickoff_template = _get_orchestrator_worker_prompt(config)
+
         session_workdir = _get_session_workdir(session_name)
         kickoff = _build_worker_kickoff_prompt(
             orch.get("goal") or "",
@@ -3919,6 +4046,9 @@ def _process_orchestrator_session(orch_id, orch, session_name, state):
             "orchestrator_id": orch_id,
             "goal": goal
         })
+        # Mark this session as done - orchestrator won't process it again until reset
+        entry["done"] = True
+        print(f"[Orchestrator] Marked session '{session_name}' as done for orchestrator '{orch.get('name')}'")
 
     _append_orchestrator_history(orch_id, orch, action)
     entry["last_output_idx"] = latest_idx
@@ -4436,7 +4566,8 @@ def list_tasks():
 
 @APP.get("/orchestrators")
 def list_orchestrators():
-    return jsonify({"count": len(_build_orchestrator_list()), "orchestrators": _build_orchestrator_list()})
+    orch_list = _build_orchestrator_list()
+    return jsonify({"count": len(orch_list), "orchestrators": orch_list})
 
 
 @APP.post("/orchestrators")
@@ -4466,6 +4597,12 @@ def create_orchestrator():
             "Keep progress moving without waiting for human input."
         )
     enabled = bool(body.get("enabled", True))
+
+    # Optional custom prompts and rules (defaults come from config or hardcoded)
+    base_prompt = (body.get("base_prompt") or "").strip()
+    rules = (body.get("rules") or "").strip()
+    worker_prompt = (body.get("worker_prompt") or "").strip()
+
     orch_id = uuid.uuid4().hex
     record = {
         "id": orch_id,
@@ -4477,6 +4614,14 @@ def create_orchestrator():
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "history": [],
     }
+
+    # Add optional fields if provided
+    if base_prompt:
+        record["base_prompt"] = base_prompt
+    if rules:
+        record["rules"] = rules
+    if worker_prompt:
+        record["worker_prompt"] = worker_prompt
     with _ORCH_LOCK:
         data = _load_orchestrators()
         data[orch_id] = record
@@ -4520,6 +4665,25 @@ def update_orchestrator(orch_id):
             orch["goal"] = (body.get("goal") or "").strip()
         if "enabled" in body:
             orch["enabled"] = bool(body.get("enabled"))
+        # Optional custom prompts and rules
+        if "base_prompt" in body:
+            base_prompt = (body.get("base_prompt") or "").strip()
+            if base_prompt:
+                orch["base_prompt"] = base_prompt
+            elif "base_prompt" in orch:
+                del orch["base_prompt"]
+        if "rules" in body:
+            rules = (body.get("rules") or "").strip()
+            if rules:
+                orch["rules"] = rules
+            elif "rules" in orch:
+                del orch["rules"]
+        if "worker_prompt" in body:
+            worker_prompt = (body.get("worker_prompt") or "").strip()
+            if worker_prompt:
+                orch["worker_prompt"] = worker_prompt
+            elif "worker_prompt" in orch:
+                del orch["worker_prompt"]
         data[orch_id] = orch
         _save_orchestrators(data)
     return jsonify({"ok": True, "orchestrator": orch})

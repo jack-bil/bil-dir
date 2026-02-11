@@ -401,6 +401,14 @@
               <button type="button" class="icon-btn" id="orchWorkerResetBtn" title="Reset to default">↺</button>
               <div class="muted">Available variables: <code>{goal}</code>, <code>{role}</code>, <code>{workdir}</code></div>
             </div>
+            <h3 style="margin-top:20px;">Orchestrator Rules</h3>
+            <div class="muted">Default rules that guide orchestrator decision-making. Can be overridden per orchestrator.</div>
+            <label for="orch_rules">Rules (one per line)</label>
+            <textarea id="orch_rules" name="orch_rules" rows="6" data-default-prompt="- If the goal is achieved, return done&#10;- If you can take another step toward the goal, send a message to continue the work&#10;- Only ask_human if you truly need their input&#10;- Review the conversation history to avoid repeating yourself&#10;- If unsure what to do next, return done">{{ orch_rules|e }}</textarea>
+            <div class="row" style="margin-top:8px;">
+              <button type="button" class="icon-btn" id="orchRulesResetBtn" title="Reset to default">↺</button>
+              <div class="muted">These rules are used unless overridden in individual orchestrators.</div>
+            </div>
           </div>
 
           <div class="tab-panel" id="tab-mcp">
@@ -754,6 +762,15 @@
       if (orchWorkerResetBtn) {
         orchWorkerResetBtn.addEventListener("click", () => {
           const area = document.getElementById("orch_worker_prompt");
+          if (!area) return;
+          const defVal = area.getAttribute("data-default-prompt") || "";
+          area.value = defVal;
+        });
+      }
+      const orchRulesResetBtn = document.getElementById("orchRulesResetBtn");
+      if (orchRulesResetBtn) {
+        orchRulesResetBtn.addEventListener("click", () => {
+          const area = document.getElementById("orch_rules");
           if (!area) return;
           const defVal = area.getAttribute("data-default-prompt") || "";
           area.value = defVal;

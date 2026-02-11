@@ -11,9 +11,10 @@ sessions.json
 tasks.json
 mcp.json
 
-# Context and provider configs
+# Context directory
 context/
-providers/
+# Provider config (user-specific)
+providers/config.toml
 
 # Auto-generated provider instruction files
 COPILOT.md

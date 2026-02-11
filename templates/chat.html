@@ -683,6 +683,11 @@
         align-items: center;
         gap: 8px;
       }
+      .orchestrator-meta > div:first-child {
+        flex: 1;
+        min-width: 0;
+        word-break: break-word;
+      }
       .task-meta strong {
         display: block;
       }
@@ -695,6 +700,7 @@
         display: inline-flex;
         gap: 8px;
         align-items: center;
+        flex-shrink: 0;
       }
       .orchestrator-detail {
         color: var(--muted);
@@ -1826,6 +1832,18 @@
           <textarea id="orchGoal" placeholder="Short goal for the orchestrator">Act as a project manager across any task type. Always do the next concrete step toward completion: decide, execute, then report. After every session reply, inject the single most valuable next action (no questions unless truly blocking). Run tests or a quick manual run when relevant, fix errors until the objective is complete, and use MCP tools (e.g., Playwright) to validate outputs or UI. Keep progress moving without waiting for human input.</textarea>
         </div>
         <div class="form-group">
+          <label for="orchBasePrompt">Base Prompt <span class="muted">(optional, defaults from config)</span></label>
+          <textarea id="orchBasePrompt" placeholder="Leave empty to use config default" rows="3"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="orchRules">Rules <span class="muted">(optional, defaults to standard rules)</span></label>
+          <textarea id="orchRules" placeholder="- If the goal is achieved, return done&#10;- If you can take another step toward the goal, send a message to continue the work&#10;- Only ask_human if you truly need their input&#10;- Review the conversation history to avoid repeating yourself&#10;- If unsure what to do next, return done" rows="5"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="orchWorkerPrompt">Worker Kickoff Prompt <span class="muted">(optional, defaults from config)</span></label>
+          <textarea id="orchWorkerPrompt" placeholder="Leave empty to use config default" rows="3"></textarea>
+        </div>
+        <div class="form-group">
           <label>Managed Sessions</label>
           <div class="checkbox-group" id="orchSessionList">
             {% if session_list %}
@@ -1980,7 +1998,7 @@
             <span>▾</span>
             Orchestrators
           </button>
-          <button class="icon-round" id="addOrchBtn" type="button" aria-label="Add orchestrator" title="Add orchestrator">+</button>
+          <a class="icon-round" href="/orchestrators/new" aria-label="Add orchestrator" title="Add orchestrator">+</a>
         </div>
         <div class="section-body" id="orchBody">
           <ul class="orchestrators-list" id="orchestratorsList">
@@ -2135,6 +2153,7 @@
             <h2>{{ selected_orchestrator.name }}</h2>
             <div class="task-header-actions">
               <span class="provider-tag" data-provider>{{ selected_orchestrator.provider }}</span>
+              <a class="icon-btn" href="/orchestrators/{{ selected_orchestrator.id }}/edit" title="Edit orchestrator">✏️</a>
             </div>
           </div>
           <div class="task-output-section">
@@ -2171,10 +2190,123 @@
               </div>
             </div>
           </div>
+
+          {% if selected_orchestrator.base_prompt or selected_orchestrator.rules or selected_orchestrator.worker_prompt %}
+          <div class="task-output-section">
+            <h3>Custom Configuration</h3>
+
+            {% if selected_orchestrator.base_prompt %}
+            <div style="margin-bottom: 16px;">
+              <h4 style="color: var(--muted); font-size: 13px; margin: 8px 0 4px; text-transform: uppercase;">Base Prompt</h4>
+              <pre class="task-output-content" style="white-space: pre-wrap; word-wrap: break-word;">{{ selected_orchestrator.base_prompt }}</pre>
+            </div>
+            {% endif %}
+
+            {% if selected_orchestrator.rules %}
+            <div style="margin-bottom: 16px;">
+              <h4 style="color: var(--muted); font-size: 13px; margin: 8px 0 4px; text-transform: uppercase;">Rules</h4>
+              <pre class="task-output-content" style="white-space: pre-wrap; word-wrap: break-word;">{{ selected_orchestrator.rules }}</pre>
+            </div>
+            {% endif %}
+
+            {% if selected_orchestrator.worker_prompt %}
+            <div style="margin-bottom: 16px;">
+              <h4 style="color: var(--muted); font-size: 13px; margin: 8px 0 4px; text-transform: uppercase;">Worker Kickoff Prompt</h4>
+              <pre class="task-output-content" style="white-space: pre-wrap; word-wrap: break-word;">{{ selected_orchestrator.worker_prompt }}</pre>
+            </div>
+            {% endif %}
+          </div>
+          {% endif %}
+
           <div class="task-output-section">
             <h3>History</h3>
             <pre class="task-output-content">{{ selected_orchestrator.history_text }}</pre>
           </div>
+        </div>
+        {% elif view_mode == 'orchestrator_edit' and selected_orchestrator %}
+        <div class="task-detail-view" id="orchEditView">
+          <div class="task-header">
+            <h2>{% if is_new_orchestrator %}New Orchestrator{% else %}Edit Orchestrator{% endif %}</h2>
+            <div class="task-header-actions">
+              <button class="icon-btn" id="saveOrchBtn" title="{% if is_new_orchestrator %}Create{% else %}Save{% endif %}">💾</button>
+              {% if not is_new_orchestrator %}
+              <button class="icon-btn" id="deleteOrchBtn" title="Delete">🗑</button>
+              {% endif %}
+            </div>
+          </div>
+          <form id="orchEditForm" class="task-edit-form">
+            <div>
+              <label for="orchEditName">Name *</label>
+              <input type="text" id="orchEditName" name="name" value="{{ selected_orchestrator.name }}" required />
+            </div>
+            <div>
+              <label for="orchEditProvider">Provider</label>
+              <select id="orchEditProvider" name="provider">
+                {% for p in available_providers %}
+                <option value="{{ p }}" {% if selected_orchestrator.provider == p %}selected{% endif %}>{{ p|capitalize }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label for="orchEditGoal">Goal *</label>
+              <textarea id="orchEditGoal" name="goal" placeholder="Describe what the orchestrator should accomplish" required>{{ selected_orchestrator.goal }}</textarea>
+            </div>
+            <div>
+              <label>Managed Sessions *</label>
+              <div class="checkbox-group" id="orchEditManagedList">
+                {% if session_list %}
+                  {% for item in session_list %}
+                  <label class="checkbox-row">
+                    <input type="checkbox" name="managed_sessions" value="{{ item.name }}" {% if selected_orchestrator.managed_sessions and item.name in selected_orchestrator.managed_sessions %}checked{% endif %} />
+                    {{ item.name }}
+                  </label>
+                  {% endfor %}
+                {% else %}
+                  <div class="muted">No sessions available. Create a session first.</div>
+                {% endif %}
+              </div>
+            </div>
+            <div>
+              <label for="orchEditEnabled">
+                <input type="checkbox" id="orchEditEnabled" name="enabled" {% if selected_orchestrator.enabled %}checked{% endif %} />
+                Start enabled
+              </label>
+            </div>
+
+            <h3 style="margin-top: 24px; margin-bottom: 8px; color: var(--muted); font-size: 14px; text-transform: uppercase;">Optional Customizations</h3>
+
+            <div>
+              <label for="orchEditBasePrompt">
+                Base Prompt
+                <span class="muted">(optional, overrides config default)</span>
+              </label>
+              <textarea id="orchEditBasePrompt" name="base_prompt" placeholder="{{ default_base_prompt | e }}" rows="4">{{ selected_orchestrator.base_prompt or '' }}</textarea>
+              <div class="muted" style="margin-top: 4px;">Leave empty to use the default shown above.</div>
+            </div>
+
+            <div>
+              <label for="orchEditRules">
+                Rules
+                <span class="muted">(optional, overrides config default)</span>
+              </label>
+              <textarea id="orchEditRules" name="rules" placeholder="{{ default_rules | e }}" rows="6">{{ selected_orchestrator.rules or '' }}</textarea>
+              <div class="muted" style="margin-top: 4px;">Leave empty to use the default rules shown above.</div>
+            </div>
+
+            <div>
+              <label for="orchEditWorkerPrompt">
+                Worker Kickoff Prompt
+                <span class="muted">(optional, overrides config default)</span>
+              </label>
+              <textarea id="orchEditWorkerPrompt" name="worker_prompt" placeholder="{{ default_worker_prompt | e }}" rows="4">{{ selected_orchestrator.worker_prompt or '' }}</textarea>
+              <div class="muted" style="margin-top: 4px;">Leave empty to use the default shown above. Available variables: {goal}, {role}, {workdir}</div>
+            </div>
+
+            <div class="row" style="margin-top: 16px;">
+              <button type="submit" class="primary-btn">{% if is_new_orchestrator %}Create Orchestrator{% else %}Save Changes{% endif %}</button>
+              <a href="/chat" class="secondary-btn" style="text-decoration: none; display: inline-flex; align-items: center;">Cancel</a>
+            </div>
+          </form>
         </div>
         {% elif view_mode == 'master' %}
         <div class="task-detail-view" id="masterDetailView">
@@ -2292,6 +2424,9 @@
       const orchNameInput = document.getElementById("orchName");
       const orchProviderSelect = document.getElementById("orchProvider");
       const orchGoalInput = document.getElementById("orchGoal");
+      const orchBasePromptInput = document.getElementById("orchBasePrompt");
+      const orchRulesInput = document.getElementById("orchRules");
+      const orchWorkerPromptInput = document.getElementById("orchWorkerPrompt");
       const orchSessionList = document.getElementById("orchSessionList");
       const orchEnabledInput = document.getElementById("orchEnabled");
       const addTaskBtn = document.getElementById("addTaskBtn");
@@ -4475,6 +4610,9 @@
         if (orchNameInput) orchNameInput.value = "";
         if (orchProviderSelect) orchProviderSelect.value = "codex";
         if (orchGoalInput) orchGoalInput.value = "";
+        if (orchBasePromptInput) orchBasePromptInput.value = "";
+        if (orchRulesInput) orchRulesInput.value = "";
+        if (orchWorkerPromptInput) orchWorkerPromptInput.value = "";
         if (orchEnabledInput) orchEnabledInput.checked = true;
         if (orchSessionList) {
           orchSessionList.querySelectorAll("input[type='checkbox']").forEach((cb) => {
@@ -4511,15 +4649,24 @@
           if (!name) return;
           const provider = orchProviderSelect ? orchProviderSelect.value : "codex";
           const goal = orchGoalInput ? orchGoalInput.value.trim() : "";
+          const base_prompt = orchBasePromptInput ? orchBasePromptInput.value.trim() : "";
+          const rules = orchRulesInput ? orchRulesInput.value.trim() : "";
+          const worker_prompt = orchWorkerPromptInput ? orchWorkerPromptInput.value.trim() : "";
           const managed = orchSessionList
             ? Array.from(orchSessionList.querySelectorAll("input[type='checkbox']:checked")).map((cb) => cb.value)
             : [];
           const enabled = orchEnabledInput ? orchEnabledInput.checked : true;
+
+          const payload = { name, provider, goal, managed_sessions: managed, enabled };
+          if (base_prompt) payload.base_prompt = base_prompt;
+          if (rules) payload.rules = rules;
+          if (worker_prompt) payload.worker_prompt = worker_prompt;
+
           try {
             const resp = await fetch("/orchestrators", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name, provider, goal, managed_sessions: managed, enabled }),
+              body: JSON.stringify(payload),
             });
             if (!resp.ok) {
               const data = await resp.json().catch(() => ({}));
@@ -5229,6 +5376,97 @@
         });
       }
       } // End task detail view block
+
+      // Orchestrator edit view handlers
+      if (document.getElementById("orchEditForm")) {
+        const orchEditForm = document.getElementById("orchEditForm");
+        const saveOrchBtn = document.getElementById("saveOrchBtn");
+        const deleteOrchBtn = document.getElementById("deleteOrchBtn");
+        const orchId = "{{ selected_orchestrator.id if selected_orchestrator else '' }}";
+        const isNew = {{ 'true' if is_new_orchestrator else 'false' }};
+
+        if (orchEditForm) {
+          orchEditForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+
+            const formData = new FormData(orchEditForm);
+            const payload = {
+              name: formData.get("name").trim(),
+              provider: formData.get("provider"),
+              goal: formData.get("goal").trim(),
+              managed_sessions: Array.from(formData.getAll("managed_sessions")),
+              enabled: formData.get("enabled") === "on",
+            };
+
+            // Add optional fields if provided
+            const basePrompt = formData.get("base_prompt").trim();
+            if (basePrompt) payload.base_prompt = basePrompt;
+
+            const rules = formData.get("rules").trim();
+            if (rules) payload.rules = rules;
+
+            const workerPrompt = formData.get("worker_prompt").trim();
+            if (workerPrompt) payload.worker_prompt = workerPrompt;
+
+            try {
+              if (isNew) {
+                // Create new orchestrator
+                const resp = await fetch("/orchestrators", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(payload),
+                });
+                if (resp.ok) {
+                  window.location.href = "/chat";
+                } else {
+                  const data = await resp.json().catch(() => ({}));
+                  alert(data.error || "Failed to create orchestrator");
+                }
+              } else {
+                // Update existing orchestrator
+                const resp = await fetch(`/orchestrators/${orchId}`, {
+                  method: "PATCH",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(payload),
+                });
+                if (resp.ok) {
+                  window.location.href = "/chat";
+                } else {
+                  const data = await resp.json().catch(() => ({}));
+                  alert(data.error || "Failed to update orchestrator");
+                }
+              }
+            } catch (err) {
+              console.error("Failed to save orchestrator:", err);
+              alert("Failed to save orchestrator");
+            }
+          });
+        }
+
+        if (saveOrchBtn) {
+          saveOrchBtn.addEventListener("click", () => {
+            if (orchEditForm) orchEditForm.requestSubmit();
+          });
+        }
+
+        if (deleteOrchBtn && !isNew) {
+          deleteOrchBtn.addEventListener("click", async () => {
+            const orchName = "{{ selected_orchestrator.name if selected_orchestrator else '' }}";
+            if (!confirm(`Delete orchestrator "${orchName}"?`)) return;
+            try {
+              const resp = await fetch(`/orchestrators/${orchId}`, { method: "DELETE" });
+              if (resp.ok) {
+                window.location.href = "/chat";
+              } else {
+                alert("Failed to delete orchestrator");
+              }
+            } catch (err) {
+              console.error("Failed to delete orchestrator:", err);
+              alert("Failed to delete orchestrator");
+            }
+          });
+        }
+      } // End orchestrator edit view block
 
       function wireTaskMenus() {
         const getFlyout = () => {
