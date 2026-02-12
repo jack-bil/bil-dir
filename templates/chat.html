@@ -3560,12 +3560,14 @@
           let activityPanel = null;
           if (!cliMode && renderStream) {
             activityPanel = document.createElement("details");
+            activityPanel.id = "toolsPanel";  // Set ID so appendTool() can find it
             activityPanel.className = "tools";
             activityPanel.open = true;
             const summary = document.createElement("summary");
             summary.textContent = "Activity";
             activityPanel.appendChild(summary);
             const pre = document.createElement("pre");
+            pre.id = "toolsOutput";  // Set ID so appendTool() can append to it
             pre.className = "output";
             activityPanel.appendChild(pre);
             messages.appendChild(activityPanel);

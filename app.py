@@ -1956,6 +1956,31 @@ def chat_named(name):
     default_workdir = (config.get("default_workdir") or "").strip()
     history = _get_history_for_name(name)
     history_messages = history.get("messages") or []
+
+    # If session is currently running, check if there's a pending user message
+    # that hasn't been written to the history file yet (e.g., Claude JSONL)
+    with _JOB_LOCK:
+        # Get the session's provider to build the job key
+        record = sessions.get(name) or {}
+        provider = (record.get("provider") or DEFAULT_PROVIDER).lower()
+        job_key = f"{provider}:{name}"
+        active_job = _JOBS.get(job_key)
+
+        if active_job and not active_job.done.is_set() and active_job.prompt:
+            # Job is still running - check if the prompt is already in history
+            prompt_text = active_job.prompt.strip()
+            if prompt_text:
+                # Check if this prompt is already in history_messages
+                already_in_history = False
+                for msg in history_messages:
+                    if msg.get("role") == "user" and msg.get("text", "").strip() == prompt_text:
+                        already_in_history = True
+                        break
+
+                # If not in history yet, add it as the most recent user message
+                if not already_in_history:
+                    history_messages.append({"role": "user", "text": prompt_text})
+
     if not any((m.get("role") == "system" and str(m.get("text", "")).startswith("[Orchestrator]")) for m in history_messages):
         kickoff_prompt = None
         with _ORCH_LOCK:
