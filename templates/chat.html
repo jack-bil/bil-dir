@@ -2399,6 +2399,7 @@
       const defaultWorkdir = document.body.dataset.defaultWorkdir || "";
       const sessionWorkdir = document.body.dataset.sessionWorkdir || "";
       let currentWorkdir = "";
+      let droppedFiles = []; // Store dropped image files {placeholder: '[file.png]', path: 'C:\\full\\path'}
       const idsOverlay = document.getElementById("idsOverlay");
       const idsModal = document.getElementById("idsModal");
       const idsBody = document.getElementById("idsBody");
@@ -2951,6 +2952,11 @@
         return text;
       }
 
+      function stripAnsi(text) {
+        // Remove ANSI escape codes for cleaner activity output
+        return text.replace(/\x1b\[[0-9;]*m/g, '');
+      }
+
       function appendTool(output) {
         if (cliMode && lastCliMessage) {
           appendTerminalBlock(lastCliMessage, output, "activity");
@@ -2971,7 +2977,7 @@
           messages.appendChild(tools);
         }
         const pre = document.getElementById("toolsOutput");
-        pre.textContent += output;
+        pre.textContent += stripAnsi(output);
         scrollToBottom();
       }
 
@@ -2983,7 +2989,7 @@
         if (!text || !panel) return;
         const pre = panel.querySelector("pre");
         if (!pre) return;
-        pre.textContent += text + "\n";
+        pre.textContent += stripAnsi(text) + "\n";
         scrollToBottom();
       }
 
@@ -3253,10 +3259,172 @@
         
         // Initial resize
         autoResize();
+
+        // Drag-and-drop image support
+        promptInput.addEventListener('dragover', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          promptInput.style.backgroundColor = 'rgba(100, 150, 255, 0.1)';
+        });
+
+        promptInput.addEventListener('dragleave', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          promptInput.style.backgroundColor = '';
+        });
+
+        promptInput.addEventListener('drop', async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          promptInput.style.backgroundColor = '';
+
+          const files = Array.from(e.dataTransfer.files);
+          const imageFiles = files.filter(f => /\.(png|jpe?g|gif|webp|bmp)$/i.test(f.name));
+
+          if (imageFiles.length === 0) {
+            return; // No image files dropped
+          }
+
+          const cursorPos = promptInput.selectionStart;
+          const textBefore = promptInput.value.substring(0, cursorPos);
+          const textAfter = promptInput.value.substring(cursorPos);
+
+          let insertText = '';
+
+          // Upload each file and get server path
+          for (const file of imageFiles) {
+            const placeholder = `[${file.name}]`;
+            insertText += placeholder + ' ';
+
+            // Upload file to server
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+              const response = await fetch('/upload-image', {
+                method: 'POST',
+                body: formData
+              });
+
+              if (response.ok) {
+                const data = await response.json();
+                droppedFiles.push({
+                  placeholder: placeholder,
+                  path: data.path
+                });
+              } else {
+                console.error('Failed to upload image:', file.name);
+                // Still add placeholder but without path - will show error on submit
+                droppedFiles.push({
+                  placeholder: placeholder,
+                  path: ''
+                });
+              }
+            } catch (err) {
+              console.error('Error uploading image:', err);
+              droppedFiles.push({
+                placeholder: placeholder,
+                path: ''
+              });
+            }
+          }
+
+          promptInput.value = textBefore + insertText + textAfter;
+          promptInput.selectionStart = promptInput.selectionEnd = cursorPos + insertText.length;
+          autoResize();
+          promptInput.focus();
+        });
+
+        // Clipboard paste image support
+        promptInput.addEventListener('paste', async (e) => {
+          const items = e.clipboardData?.items;
+          if (!items) {
+            console.log('[Paste] No clipboard items found');
+            return;
+          }
+
+          // Debug: Log all clipboard items
+          console.log('[Paste] Clipboard items:', Array.from(items).map(i => ({type: i.type, kind: i.kind})));
+
+          // Check if clipboard contains image
+          const imageItems = Array.from(items).filter(item => item.type.startsWith('image/'));
+          if (imageItems.length === 0) {
+            console.log('[Paste] No image items in clipboard');
+            return;
+          }
+
+          console.log('[Paste] Found image items:', imageItems.length);
+
+          e.preventDefault(); // Prevent default paste behavior for images
+
+          const cursorPos = promptInput.selectionStart;
+          const textBefore = promptInput.value.substring(0, cursorPos);
+          const textAfter = promptInput.value.substring(cursorPos);
+
+          let insertText = '';
+
+          // Process each image from clipboard
+          for (const item of imageItems) {
+            const blob = item.getAsFile();
+            if (!blob) continue;
+
+            // Generate filename with timestamp
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+            const extension = blob.type.split('/')[1] || 'png';
+            const filename = `pasted-image-${timestamp}.${extension}`;
+            const placeholder = `[${filename}]`;
+            insertText += placeholder + ' ';
+
+            // Upload blob to server
+            const formData = new FormData();
+            formData.append('file', blob, filename);
+
+            try {
+              const response = await fetch('/upload-image', {
+                method: 'POST',
+                body: formData
+              });
+
+              if (response.ok) {
+                const data = await response.json();
+                droppedFiles.push({
+                  placeholder: placeholder,
+                  path: data.path
+                });
+                console.log(`Pasted image uploaded: ${filename} -> ${data.path}`);
+              } else {
+                console.error('Failed to upload pasted image:', filename);
+                droppedFiles.push({
+                  placeholder: placeholder,
+                  path: ''
+                });
+              }
+            } catch (err) {
+              console.error('Error uploading pasted image:', err);
+              droppedFiles.push({
+                placeholder: placeholder,
+                path: ''
+              });
+            }
+          }
+
+          // Insert placeholders at cursor position
+          promptInput.value = textBefore + insertText + textAfter;
+          promptInput.selectionStart = promptInput.selectionEnd = cursorPos + insertText.length;
+          autoResize();
+          promptInput.focus();
+        });
       }
-      
+
       if (selectedSession) {
         if (promptInput) {
+          // Restore any unsent prompt that was saved before reload
+          const unsent = sessionStorage.getItem('unsent_prompt');
+          if (unsent) {
+            promptInput.value = unsent;
+            sessionStorage.removeItem('unsent_prompt');
+            autoResize(); // Resize textarea to fit restored content
+          }
           promptInput.focus();
         }
         requestAnimationFrame(() => scrollToBottom());
@@ -3314,13 +3482,13 @@
         }
       }
 
-      // Initialize workdir: session-specific > localStorage > default
+      // Initialize workdir: session-specific > default from config
+      // Don't use localStorage - it causes sessions to inherit workdirs from other sessions
       try {
         if (sessionWorkdir) {
           setWorkdir(sessionWorkdir);
         } else {
-          const saved = localStorage.getItem("currentWorkdir") || "";
-          setWorkdir(saved || defaultWorkdir);
+          setWorkdir(defaultWorkdir);
         }
       } catch (err) {
         setWorkdir(sessionWorkdir || defaultWorkdir);
@@ -3972,8 +4140,19 @@
       if (form) {
         form.addEventListener("submit", async (e) => {
           e.preventDefault();
-          const prompt = document.getElementById("prompt").value.trim();
+          let prompt = document.getElementById("prompt").value.trim();
           if (!prompt) return;
+
+          // Replace image placeholders with full file paths
+          if (droppedFiles && droppedFiles.length > 0) {
+            droppedFiles.forEach(file => {
+              if (file.path) {
+                prompt = prompt.replace(file.placeholder, file.path);
+              }
+            });
+            // Clear dropped files after sending
+            droppedFiles = [];
+          }
           if (masterMode) {
             const parsed = parseMasterInput(prompt);
             if (!parsed) {
@@ -3986,12 +4165,14 @@
             if (shouldRouteToOrch) {
               addMessage(`@@${parsed.name}: ${parsed.message}`, "user");
               promptInput.value = "";
+              autoResize();
               renderPromptMirror();
               await handleOrchestratorCommand(orch, orchCommand);
               return;
             }
             addMessage(`@@${parsed.name}: ${parsed.message}`, "user");
             promptInput.value = "";
+            autoResize();
             renderPromptMirror();
             const payload = {
               session_name: parsed.name,
@@ -4009,6 +4190,7 @@
 
           addMessage(prompt, "user");
           promptInput.value = "";
+          autoResize();
 
           const provider = providerSelect ? providerSelect.value : "codex";
           const payload = {
@@ -5944,6 +6126,10 @@
             } else if (data.type === "job_complete") {
               // Job completed - reload messages to show new responses
               if (data.has_response && selectedSession) {
+                // Save any unsent input before reload
+                if (promptInput && promptInput.value) {
+                  sessionStorage.setItem('unsent_prompt', promptInput.value);
+                }
                 location.reload();
               }
             }

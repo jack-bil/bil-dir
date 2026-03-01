@@ -1465,7 +1465,12 @@ def _get_claude_history(session_id, workdir):
                             if isinstance(block, dict) and block.get("type") == "text":
                                 texts.append(block.get("text", ""))
                         if texts:
-                            messages.append({"role": "assistant", "text": "\n".join(texts)})
+                            text_content = "\n".join(texts)
+                            # Merge consecutive assistant messages into one bubble
+                            if messages and messages[-1].get("role") == "assistant":
+                                messages[-1]["text"] += "\n" + text_content
+                            else:
+                                messages.append({"role": "assistant", "text": text_content})
 
                     # Tool outputs (bash commands, etc.)
                     elif entry_type == "tool_result":
@@ -1802,6 +1807,41 @@ def pick_workdir():
     if not path:
         return jsonify({"cancelled": True}), 200
     return jsonify({"path": path})
+
+
+@APP.post("/upload-image")
+def upload_image():
+    """Upload an image file and return its path for agent use."""
+    if 'file' not in request.files:
+        return jsonify({"error": "No file provided"}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+
+    # Validate file type
+    allowed_extensions = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'}
+    file_ext = pathlib.Path(file.filename).suffix.lower()
+    if file_ext not in allowed_extensions:
+        return jsonify({"error": f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"}), 400
+
+    # Create temp directory for uploaded images (in scratchpad)
+    import tempfile
+    temp_dir = pathlib.Path(tempfile.gettempdir()) / "bil-dir-uploads"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate unique filename
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_filename = f"{timestamp}_{file.filename}"
+    file_path = temp_dir / safe_filename
+
+    try:
+        file.save(str(file_path))
+        logger.info(f"[Upload] Saved image to {file_path}")
+        return jsonify({"path": str(file_path), "filename": file.filename})
+    except Exception as e:
+        logger.error(f"[Upload] Failed to save image: {e}", exc_info=True)
+        return jsonify({"error": f"Failed to save file: {e}"}), 500
 
 
 @APP.get("/config")

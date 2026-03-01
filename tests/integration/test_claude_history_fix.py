@@ -256,6 +256,106 @@ class TestClaudeHistoryFix:
 
         print("\n[PASS] Non-existent session returns empty history")
 
+    def test_consecutive_assistant_messages_are_merged(self):
+        """Should merge consecutive assistant messages into single bubbles."""
+        from app import _get_claude_history
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            session_id = "merge-test-uuid"
+            workdir = os.path.join(tmp_dir, "merge_project")
+            os.makedirs(workdir, exist_ok=True)
+
+            safe_workdir = workdir.replace(":", "-").replace("\\", "-").replace("/", "-")
+            if safe_workdir.startswith("-"):
+                safe_workdir = safe_workdir[1:]
+
+            claude_dir = os.path.join(tmp_dir, ".claude", "projects", safe_workdir)
+            os.makedirs(claude_dir, exist_ok=True)
+
+            session_file = os.path.join(claude_dir, f"{session_id}.jsonl")
+            with open(session_file, 'w', encoding='utf-8') as f:
+                # User message
+                f.write(json.dumps({
+                    "type": "user",
+                    "message": {"content": "Hello"},
+                    "uuid": "user-1"
+                }) + "\n")
+
+                # First assistant message
+                f.write(json.dumps({
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "Part 1"}]
+                    },
+                    "uuid": "assistant-1"
+                }) + "\n")
+
+                # Second consecutive assistant message (should merge)
+                f.write(json.dumps({
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "Part 2"}]
+                    },
+                    "uuid": "assistant-2"
+                }) + "\n")
+
+                # Third consecutive assistant message (should merge)
+                f.write(json.dumps({
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "Part 3"}]
+                    },
+                    "uuid": "assistant-3"
+                }) + "\n")
+
+                # Another user message
+                f.write(json.dumps({
+                    "type": "user",
+                    "message": {"content": "Thanks"},
+                    "uuid": "user-2"
+                }) + "\n")
+
+                # Another assistant message (separate bubble)
+                f.write(json.dumps({
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "You're welcome"}]
+                    },
+                    "uuid": "assistant-4"
+                }) + "\n")
+
+            import app
+            original_expanduser = os.path.expanduser
+            os.path.expanduser = lambda p: tmp_dir if p == "~" else original_expanduser(p)
+
+            try:
+                history = _get_claude_history(session_id, workdir)
+
+                # Should have 4 messages total: user, merged assistant, user, assistant
+                assert len(history["messages"]) == 4, f"Expected 4 messages, got {len(history['messages'])}"
+
+                # First message: user
+                assert history["messages"][0]["role"] == "user"
+                assert history["messages"][0]["text"] == "Hello"
+
+                # Second message: merged assistant (Parts 1, 2, 3)
+                assert history["messages"][1]["role"] == "assistant"
+                assert history["messages"][1]["text"] == "Part 1\nPart 2\nPart 3", \
+                    f"Expected merged text, got: {history['messages'][1]['text']}"
+
+                # Third message: user
+                assert history["messages"][2]["role"] == "user"
+                assert history["messages"][2]["text"] == "Thanks"
+
+                # Fourth message: separate assistant
+                assert history["messages"][3]["role"] == "assistant"
+                assert history["messages"][3]["text"] == "You're welcome"
+
+                print("\n[PASS] Consecutive assistant messages merged correctly into single bubble")
+
+            finally:
+                os.path.expanduser = original_expanduser
+
 
 if __name__ == "__main__":
     # Allow running directly for quick testing
@@ -264,23 +364,27 @@ if __name__ == "__main__":
     test = TestClaudeHistoryFix()
 
     try:
-        print("[1/4] Testing Claude JSONL file reading...")
+        print("[1/5] Testing Claude JSONL file reading...")
         test.test_get_claude_history_reads_jsonl_file()
 
-        print("\n[2/4] Testing _get_history_for_name with Claude provider...")
+        print("\n[2/5] Testing _get_history_for_name with Claude provider...")
         test.test_get_history_for_name_uses_claude_reader_for_claude_sessions()
 
-        print("\n[3/4] Testing multi-line message handling...")
+        print("\n[3/5] Testing multi-line message handling...")
         test.test_claude_history_with_multi_line_messages()
 
-        print("\n[4/4] Testing empty session handling...")
+        print("\n[4/5] Testing empty session handling...")
         test.test_empty_claude_session_returns_empty_history()
+
+        print("\n[5/5] Testing consecutive assistant message merging...")
+        test.test_consecutive_assistant_messages_are_merged()
 
         print("\n" + "="*70)
         print("[PASS] ALL TESTS PASSED!")
         print("="*70)
         print("\nThe Claude history fix is working correctly.")
         print("Orchestrators can now read Claude session history from JSONL files.")
+        print("Consecutive assistant messages are properly merged into single bubbles.")
 
     except AssertionError as e:
         print(f"\n[FAIL] TEST FAILED: {e}")
